@@ -190,17 +190,22 @@ func (s *providerSession) refresh() error {
 }
 
 func (s *providerSession) prepare() error {
+	// Checkout uses the supplied AT. Refresh belongs to the post-payment renewal
+	// stage; an expired checkout credential must not add a pre-payment refresh.
+	if s.purpose == "checkout" {
+		if !s.in.TokenExpiresAt.IsZero() && !s.in.TokenExpiresAt.After(time.Now()) {
+			return checkoutFailure("invalid_session", false, false)
+		}
+		return nil
+	}
 	available := s.in.SessionToken != "" || s.in.Cookies != ""
 	if !available && s.trace != nil {
 		s.trace("waiting", "session_refresh_unavailable")
 	}
 	if available && (s.in.RefreshPurpose != s.purpose || time.Since(s.in.RefreshedAt) > time.Minute || !s.in.TokenExpiresAt.After(time.Now().Add(time.Minute))) {
-		err := s.refresh()
-		// A rejected refresh cookie does not invalidate an independently valid AT.
-		if providerCode(err) == "invalid_session" && s.in.TokenExpiresAt.After(time.Now()) {
-			return nil
-		}
-		return err
+		// Once renewal requires a refresh, a failed refresh cannot authorize
+		// cancellation with the original, potentially stale AT.
+		return s.refresh()
 	}
 	if !s.in.TokenExpiresAt.IsZero() && !s.in.TokenExpiresAt.After(time.Now()) {
 		return checkoutFailure("invalid_session", false, false)
@@ -210,7 +215,7 @@ func (s *providerSession) prepare() error {
 
 func (s *providerSession) read(ctx context.Context, target string) (M, error) {
 	v, err := providerJSON(ctx, s.client, "GET", target, providerHeaders(*s.in), nil, false)
-	if providerCode(err) == "invalid_session" && !s.attempted && (s.in.SessionToken != "" || s.in.Cookies != "") {
+	if s.purpose != "checkout" && providerCode(err) == "invalid_session" && !s.attempted && (s.in.SessionToken != "" || s.in.Cookies != "") {
 		if err = s.refresh(); err == nil {
 			return providerJSON(ctx, s.client, "GET", target, providerHeaders(*s.in), nil, false)
 		}

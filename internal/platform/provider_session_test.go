@@ -131,20 +131,31 @@ func TestRefreshBoundedRecoveryAndLegacyInput(t *testing.T) {
 }
 
 func TestCheckoutPreflightDoesNotReplaceNativeCheckout(t *testing.T) {
-	for _, mode := range []string{"free", "active", "wrong_account"} {
+	for _, mode := range []string{"free", "active", "wrong_account", "expired", "unauthorized"} {
 		t.Run(mode, func(t *testing.T) {
 			in, _ := refreshFixture(t)
 			in.Product = "pro5x"
 			in.Country = "PH"
 			in.Mode = "long"
+			if mode == "expired" {
+				in.TokenExpiresAt = time.Now().Add(-time.Minute)
+			}
+			originalAT := in.AccessToken
 			writes := 0
 			c := &http.Client{Transport: testRoundTrip(func(r *http.Request) (*http.Response, error) {
 				switch r.URL.Host + r.URL.Path {
 				case "ipinfo.io/json":
 					return providerResponse(200, M{"country": "PH", "ip": "203.0.113.2"}), nil
 				case "chatgpt.com/api/auth/session":
-					return providerResponse(200, testSession(in.Email)), nil
+					t.Fatal("checkout must not refresh Session before payment")
+					return nil, nil
 				case "chatgpt.com/backend-api/accounts/check/v4-2023-04-27":
+					if r.Header.Get("Authorization") != "Bearer "+originalAT {
+						t.Fatal("checkout must use the supplied AT")
+					}
+					if mode == "unauthorized" {
+						return providerResponse(401, M{"error": M{"code": "token_expired"}}), nil
+					}
 					id := "test-space"
 					if mode == "wrong_account" {
 						id = "other"
@@ -152,6 +163,9 @@ func TestCheckoutPreflightDoesNotReplaceNativeCheckout(t *testing.T) {
 					return providerResponse(200, M{"accounts": M{id: M{"account": M{"id": id, "account_type": "personal"}, "entitlement": M{"has_active_subscription": mode == "active"}}}}), nil
 				case "chatgpt.com/backend-api/payments/checkout":
 					writes++
+					if r.Header.Get("Authorization") != "Bearer "+originalAT {
+						t.Fatal("checkout replaced the supplied AT")
+					}
 					if r.Header.Get("User-Agent") != iosCheckoutUA || r.Header.Get("OpenAI-Client-Type") != "native" {
 						t.Fatal("checkout method replaced")
 					}
