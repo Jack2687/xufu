@@ -18,8 +18,10 @@ docker compose -p xufu build --build-arg SOURCE_REVISION="$(git rev-parse HEAD)"
 docker run --rm --network none --shm-size=1g xufu-app:local node --test runtime/payment-browser.test.mjs
 docker compose -p xufu up -d postgres
 # 仅首次、确认目标库为空时导入；此步骤禁止用于日常更新。
-docker compose -p xufu exec -T postgres pg_restore -U xupay -d xupay --no-owner --no-acl --exit-on-error < /private/path/database.dump
+docker compose -p xufu exec -T postgres pg_restore -U xupay -d xupay --no-owner --no-acl --exit-on-error --single-transaction --clean --if-exists < /private/path/database.dump
 ```
+
+首次导入的 `--clean --if-exists` 用来替换新空库自带的 public schema；必须先确认目标没有业务表，不能在已有正式数据的库上运行。数据库首次初始化会启动临时实例，须等待容器健康后再导入。
 
 在应用启动前比对源库和目标库全部 public 表行数与内容指纹，并核对生产主密钥。成功后才启动应用：
 
