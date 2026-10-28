@@ -34,4 +34,4 @@
 
 - 2026-10-28 管理员结账链接历史：order_checkout_links 每订单每重建轮次加密保存实际生成 URL，和提链完成同事务写入。重建、付款完成及运行态过期清理不删除历史。只有 /api/admin/orders/{id} 返回 checkout_links，客户网页与 /api/v1 订阅订单不可见。完整流程支持长链全文和复制（兼容HTTP剪贴板）；不自动打开或请求链接、不提供重新付款操作。升级只保留仍在库的旧链接，旧生成时间不伪造；已清理链接无法恢复。
 
-- 2026-10-28 授权与监控升级及用户时序纠正：参见 docs/session-and-payment-monitoring.md。最小刷新凭据（可选 sessionToken/会话 Cookie）加密保留，最长24h；兼容 AT-only，原 Session JSON 不保存。提链前只使用原有效AT并在线核对，不调用Session刷新；付款成功后经全局代理刷新，保存新AT后核实生效/处理续费。刷新失败不能回退旧AT提交取消。新订阅 activation 独立记录，默认5秒×12次；keep同样核实但不取消。付款和取消fence不回退，套餐不符不标记生效。异步HTTP诊断白名单落库，敏感数据不投影；实收证据加密且校验原结账身份。历史行not_checked不伪造。
+- 2026-10-28 授权与监控升级及用户时序纠正：参见 docs/session-and-payment-monitoring.md。最小刷新凭据（可选 sessionToken/会话 Cookie）加密保留，最长24h；兼容 AT-only，原 Session JSON 不保存。提链前只使用原有效AT并在线核对，不调用Session刷新；付款成功后经全局代理先查询订阅生效，401时刷新保存新AT后重查；进入取消续费时再主动刷新一次、保存后查询并处理续费。保留续费不执行取消阶段刷新。刷新失败不能回退旧AT提交取消。新订阅 activation 独立记录，默认5秒×12次；keep同样核实但不取消。付款和取消fence不回退，套餐不符不标记生效。异步HTTP诊断白名单落库，敏感数据不投影；实收证据加密且校验原结账身份。历史行not_checked不伪造。

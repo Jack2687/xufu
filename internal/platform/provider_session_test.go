@@ -252,7 +252,7 @@ func TestPaidActivationRetryRefreshAndKeep(t *testing.T) {
 			t.Fatal("activation failed", status, activation)
 		}
 	}
-	if refreshes != 1 || reads != 2 || writes != 0 {
+	if refreshes != 0 || reads != 2 || writes != 0 {
 		t.Fatal("wrong calls", refreshes, reads, writes)
 	}
 	paymentBalances(t, h, 90000, 0)

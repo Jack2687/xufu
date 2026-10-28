@@ -244,13 +244,17 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 					t.Fatal(state)
 				}
 			}
-			if writes.Load() != 1 || reads.Load() != 2 || refreshes.Load() != 1 || tunnels.Load() < 1 || factories != 1 {
+			wantReads, wantMethods := int32(2), "GET,GET,POST,GET"
+			if mode == "subscription" {
+				wantReads, wantMethods = 3, "GET,GET,GET,POST,GET"
+			}
+			if writes.Load() != 1 || reads.Load() != wantReads || refreshes.Load() != 1 || tunnels.Load() < 1 || factories != 1 {
 				t.Fatal("flow did not use one proxied session", writes.Load(), reads.Load(), tunnels.Load(), factories)
 			}
 			mu.Lock()
 			joined := strings.Join(methods, ",")
 			mu.Unlock()
-			if joined != "GET,GET,POST,GET" {
+			if joined != wantMethods {
 				t.Fatal(joined)
 			}
 			var leases int

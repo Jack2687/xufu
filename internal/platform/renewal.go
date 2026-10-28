@@ -80,7 +80,7 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 				return
 			}
 			defer closeClient()
-			auth := &providerSession{ctx: a.providerContext(ctx, id, "session_refresh"), client: client, in: &in, purpose: "renewal",
+			auth := &providerSession{ctx: a.providerContext(ctx, id, "session_refresh"), client: client, in: &in, purpose: "activation",
 				persist: func(v checkoutInput) error { return a.saveRenewalCredentials(ctx, id, lease, v, false) },
 				trace:   func(state, code string) { a.paymentTrace(ctx, id, "session_refresh", state, code, 0) }}
 			resultErr = auth.prepare()
@@ -104,9 +104,24 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 						} else {
 							message = "订阅已生效，正在核实自动续费设置。"
 							a.paymentTrace(ctx, id, "renewal", "running", "", 0)
-							if snapshot.RenewalKnown && !snapshot.Renew {
+							// Cancellation is a separate authorization boundary: refresh again
+							// even when activation just recovered from a 401, then re-read.
+							auth.purpose = "renewal"
+							if in.SessionToken != "" || in.Cookies != "" {
+								resultErr = auth.refresh()
+								if resultErr == nil {
+									snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "renewal"), auth)
+								}
+								if resultErr == nil && snapshot.Active && previousActivation != "not_checked" {
+									resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
+								}
+							} else {
+								// Legacy AT-only input cannot manufacture refresh credentials.
+								resultErr = auth.prepare()
+							}
+							if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && !snapshot.Renew {
 								state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
-							} else if snapshot.RenewalKnown && snapshot.Renew && !started {
+							} else if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && snapshot.Renew && !started {
 								tag, claimErr := a.DB.Exec(ctx, "UPDATE subscription_runs SET cancel_started=true WHERE order_id=$1 AND lease_token=$2 AND NOT cancel_started AND lease_until>now()", id, lease)
 								if claimErr != nil || tag.RowsAffected() != 1 {
 									return

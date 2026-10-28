@@ -190,6 +190,10 @@ func (s *providerSession) refresh() error {
 }
 
 func (s *providerSession) prepare() error {
+	// Activation first queries the supplied AT; only a rejected read refreshes it.
+	if s.purpose == "activation" {
+		return nil
+	}
 	// Checkout uses the supplied AT. Refresh belongs to the post-payment renewal
 	// stage; an expired checkout credential must not add a pre-payment refresh.
 	if s.purpose == "checkout" {
