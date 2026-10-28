@@ -16,7 +16,8 @@ import (
 
 func (a *App) adminRoutes(m *http.ServeMux) {
 	routes := map[string]http.HandlerFunc{
-		"GET /api/admin/membership": a.adminMembership, "PUT /api/admin/users/{id}/membership": a.setMembership,
+		"POST /api/admin/orders/{id}/close": a.adminCloseOrder,
+		"GET /api/admin/membership":         a.adminMembership, "PUT /api/admin/users/{id}/membership": a.setMembership,
 		"GET /api/admin/overview": a.adminOverview, "GET /api/admin/users": a.users, "POST /api/admin/users": a.createUser, "PATCH /api/admin/users/{id}": a.updateUser, "POST /api/admin/users/pricing": a.pricing, "POST /api/admin/users/{id}/balance": a.adjustBalance,
 		"GET /api/admin/orders": a.adminOrders, "GET /api/admin/orders/{id}": a.adminOrderDetail, "PATCH /api/admin/orders/{id}": a.adminOrderNote, "GET /api/admin/finance": a.finance, "GET /api/admin/finance/export": a.financeExport,
 		"GET /api/admin/topups": a.adminTopups, "POST /api/admin/topups/{id}/review": a.reviewTopup,
@@ -231,7 +232,8 @@ func (a *App) adminOrderDetail(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "结账链接记录暂时无法读取，请稍后刷新")
 		return
 	}
-	out(w, 200, M{"order": orders[0], "events": events, "trace": a.paymentTraceDetails(r.Context(), r.PathValue("id")), "checkout_links": links, "checkout": a.checkoutDetails(r.Context(), r.PathValue("id")), "payment": a.paymentDetails(r.Context(), r.PathValue("id"))})
+	closures, _ := a.query(r.Context(), "SELECT c.reason,c.prior_status,c.prior_payment_state,c.payment_submitted,c.created_at,u.email AS actor FROM order_closures c JOIN users u ON u.id=c.actor_id WHERE c.order_id=$1", r.PathValue("id"))
+	out(w, 200, M{"order": orders[0], "events": events, "trace": a.paymentTraceDetails(r.Context(), r.PathValue("id")), "closures": closures, "checkout_links": links, "checkout": a.checkoutDetails(r.Context(), r.PathValue("id")), "payment": a.paymentDetails(r.Context(), r.PathValue("id"))})
 }
 func (a *App) adminOrderNote(w http.ResponseWriter, r *http.Request) {
 	var v struct {

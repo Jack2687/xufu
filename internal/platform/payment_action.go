@@ -1,0 +1,376 @@
+package platform
+
+import (
+	"bufio"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+	"xupay/internal/cslive"
+)
+
+type actionInput struct {
+	Proxy          *browserProxyInput `json:"proxy"`
+	ExpectedIP     string             `json:"expected_ip"`
+	ExpiresAt      int64              `json:"expires_at"`
+	PublishableKey string             `json:"publishable_key"`
+	ClientSecret   string             `json:"client_secret"`
+}
+type actionCommand struct {
+	RequestID int     `json:"request_id,omitempty"`
+	Allow     bool    `json:"allow,omitempty"`
+	Type      string  `json:"type"`
+	X         float64 `json:"x,omitempty"`
+	Y         float64 `json:"y,omitempty"`
+	Text      string  `json:"text,omitempty"`
+	Key       string  `json:"key,omitempty"`
+}
+type actionEvent struct {
+	RequestID int    `json:"request_id"`
+	Type      string `json:"type"`
+	Image     string `json:"image"`
+	Outcome   string `json:"outcome"`
+	Code      string `json:"code"`
+}
+type actionProcess interface {
+	Events() <-chan actionEvent
+	Send(actionCommand) error
+	Close()
+}
+type actionStarter func(context.Context, actionInput) (actionProcess, error)
+type paymentAction struct {
+	mu                     sync.Mutex
+	id, actor, state, code string
+	frame                  []byte
+	expires                time.Time
+	process                actionProcess
+	cancel                 context.CancelFunc
+}
+type nodeAction struct {
+	events chan actionEvent
+	stdin  io.WriteCloser
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
+	once   sync.Once
+}
+
+func (p *nodeAction) Events() <-chan actionEvent { return p.events }
+func (p *nodeAction) Send(v actionCommand) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return json.NewEncoder(p.stdin).Encode(v)
+}
+func (p *nodeAction) Close() {
+	p.once.Do(func() {
+		p.stdin.Close()
+		select {
+		case <-p.done:
+		case <-time.After(3 * time.Second):
+			p.cancel()
+		}
+	})
+}
+func startActionNode(parent context.Context, in actionInput) (actionProcess, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(paymentRuntimePath()), "payment-action.mjs"))
+	cmd.Stderr = io.Discard
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, errors.New("action runtime unavailable")
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		cancel()
+		return nil, errors.New("action runtime unavailable")
+	}
+	if err = cmd.Start(); err != nil {
+		stdin.Close()
+		cancel()
+		return nil, errors.New("action runtime unavailable")
+	}
+	p := &nodeAction{events: make(chan actionEvent, 4), stdin: stdin, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		defer close(p.events)
+		defer cancel()
+		scan := bufio.NewScanner(stdout)
+		scan.Buffer(make([]byte, 4096), 1500000)
+		for scan.Scan() {
+			var e actionEvent
+			if json.Unmarshal(scan.Bytes(), &e) != nil {
+				continue
+			}
+			select {
+			case p.events <- e:
+			case <-ctx.Done():
+			}
+		}
+		cmd.Wait()
+	}()
+	go func() {
+		select {
+		case <-parent.Done():
+			p.Close()
+		case <-p.done:
+		}
+	}()
+	if err = json.NewEncoder(stdin).Encode(in); err != nil {
+		p.Close()
+		return nil, errors.New("action runtime unavailable")
+	}
+	return p, nil
+}
+
+func (a *App) actionRoutes(m *http.ServeMux) {
+	m.HandleFunc("POST /api/admin/orders/{id}/payment/action", a.require(true, a.checkProtocolPayment))
+	m.HandleFunc("GET /api/admin/orders/{id}/payment/action", a.require(true, a.actionView))
+	m.HandleFunc("POST /api/admin/orders/{id}/payment/action/input", a.require(true, a.actionInput))
+}
+func (a *App) actionFor(r *http.Request) *paymentAction {
+	a.paymentMu.Lock()
+	defer a.paymentMu.Unlock()
+	v := a.paymentActions[r.PathValue("id")]
+	if v == nil || v.actor != current(r).ID {
+		return nil
+	}
+	return v
+}
+func (a *App) actionView(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	v := a.actionFor(r)
+	if v == nil {
+		out(w, 200, M{"state": "idle"})
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	image := ""
+	if len(v.frame) > 0 && v.expires.After(time.Now()) {
+		image = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(v.frame)
+	}
+	out(w, 200, M{"id": v.id, "state": v.state, "code": v.code, "image": image, "expires_at": v.expires, "width": 960, "height": 720})
+}
+func validActionCommand(v actionCommand) bool {
+	switch v.Type {
+	case "close":
+		return true
+	case "click":
+		return v.X >= 0 && v.X < 960 && v.Y >= 0 && v.Y < 720
+	case "scroll":
+		return v.Y >= -600 && v.Y <= 600
+	case "text":
+		return len(v.Text) > 0 && utf8.ValidString(v.Text) && utf8.RuneCountInString(v.Text) <= 128 && strings.IndexFunc(v.Text, func(r rune) bool { return r < 32 || r == 127 }) < 0
+	case "key":
+		return strings.Contains("|Tab|Enter|Escape|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Space|", "|"+v.Key+"|") && v.Key != ""
+	}
+	return false
+}
+func (a *App) actionInput(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		ID string `json:"id"`
+		actionCommand
+	}
+	if !read(w, r, &input) {
+		return
+	}
+	if !validActionCommand(input.actionCommand) {
+		fail(w, 400, "验证操作无效")
+		return
+	}
+	v := a.actionFor(r)
+	if v == nil {
+		fail(w, 404, "验证窗口不存在")
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.id != input.ID || !v.expires.After(time.Now()) || v.state == "finished" || v.state == "closed" {
+		fail(w, 409, "验证窗口已结束，请核实原交易")
+		return
+	}
+	if input.Type == "close" {
+		v.cancel()
+		v.frame = nil
+		v.state = "closed"
+		out(w, 200, M{"ok": true})
+		return
+	}
+	if v.process == nil {
+		fail(w, 409, "验证窗口正在准备")
+		return
+	}
+	if err := v.process.Send(input.actionCommand); err != nil {
+		fail(w, 409, "验证窗口已关闭")
+		return
+	}
+	out(w, 200, M{"ok": true})
+}
+
+func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) error {
+	if cp.Payment != "action_required" || !paymentIntentID.MatchString(cp.PaymentIntentID) || !strings.HasPrefix(cp.ClientSecret, cp.PaymentIntentID+"_secret_") || cp.PublishableKey == "" {
+		return cslive.Failure("payment_intent_state_unavailable")
+	}
+	var enc, expected string
+	var expires time.Time
+	if err := r.a.DB.QueryRow(r.ctx, "SELECT endpoint_enc,expected_ip,expires_at FROM order_proxy_sessions WHERE order_id=$1", r.id).Scan(&enc, &expected, &expires); err != nil {
+		return cslive.Failure("proxy_session_unavailable")
+	}
+	endpoint, err := r.a.decrypt(enc)
+	if err != nil {
+		return cslive.Failure("proxy_session_unavailable")
+	}
+	factory := r.a.actionProbeClient
+	if factory == nil {
+		factory = newPaymentClient
+	}
+	probe, closeProbe, err := factory(endpoint, 8*time.Second)
+	if err != nil {
+		return cslive.Failure("proxy_session_unavailable")
+	}
+	defer closeProbe()
+	if err = r.guardIP(r.ctx, probe); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithDeadline(r.ctx, minTime(expires, time.Now().Add(10*time.Minute)))
+	defer cancel()
+	normalized, err := normalizeProxy(endpoint)
+	if err != nil {
+		return cslive.Failure("proxy_session_unavailable")
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return cslive.Failure("proxy_session_unavailable")
+	}
+	dial, err := configuredProxyDialer()
+	if err != nil {
+		return cslive.Failure("proxy_session_unavailable")
+	}
+	// Only this private, server-controlled browser may visit public bank/SDK
+	// verification hosts; no inbound client supplies a URL to this relay.
+	bridge, closeBridge, err := startBrowserProxyChecked(ctx, func(ctx context.Context, target string) (net.Conn, error) {
+		return upstreamProxyTunnel(ctx, u, target, dial)
+	}, func(ctx context.Context, host string) bool {
+		if net.ParseIP(host) != nil || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+			return false
+		}
+		if _, e := publicDialAddress(ctx, net.JoinHostPort(host, "443")); e != nil {
+			return false
+		}
+		return true // Every HTTP attempt also requests a lease/IP guard over private IPC.
+	})
+	if err != nil {
+		return cslive.Failure("proxy_session_unavailable")
+	}
+	defer closeBridge()
+	expiry := time.Now().Add(10 * time.Minute)
+	if expires.Before(expiry) {
+		expiry = expires
+	}
+	v.mu.Lock()
+	v.expires = expiry
+	v.mu.Unlock()
+	starter := r.a.actionStart
+	if starter == nil {
+		starter = startActionNode
+	}
+	process, err := starter(ctx, actionInput{Proxy: bridge, ExpectedIP: expected, ExpiresAt: expiry.Unix(), PublishableKey: cp.PublishableKey, ClientSecret: cp.ClientSecret})
+	if err != nil {
+		return cslive.Failure("action_runtime_unavailable")
+	}
+	defer process.Close()
+	v.mu.Lock()
+	v.process = process
+	v.mu.Unlock()
+	r.a.paymentTrace(r.ctx, r.id, "verification", "running", "", 0)
+	started := time.Now()
+	completed := false
+	runtimeCode := "action_interrupted"
+events:
+	for {
+		var e actionEvent
+		select {
+		case <-ctx.Done():
+			break events
+		case event, ok := <-process.Events():
+			if !ok {
+				break events
+			}
+			e = event
+		}
+		if e.Type == "guard" {
+			if err := r.guardIP(ctx, probe); err != nil {
+				runtimeCode = cslive.ErrorCode(err)
+				break events
+			}
+			if process.Send(actionCommand{Type: "guard", RequestID: e.RequestID, Allow: true}) != nil {
+				break events
+			}
+			continue
+		}
+		v.mu.Lock()
+		switch e.Type {
+		case "ready":
+			v.state = "verifying"
+		case "frame":
+			if b, err := base64.StdEncoding.DecodeString(e.Image); err == nil && len(b) <= 1000000 && len(b) > 3 && b[0] == 0xff && b[1] == 0xd8 {
+				v.frame = b
+			}
+		case "error":
+			v.code = "action_runtime_unavailable"
+			runtimeCode = v.code
+		case "result":
+			completed = true
+			v.code = safeActionCode(e.Code)
+			v.state = "checking"
+			v.frame = nil
+			r.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "verification", At: time.Now().UTC(), Elapsed: time.Since(started), Details: M{"sdk_outcome": safeActionOutcome(e.Outcome), "sdk_code": v.code}})
+		}
+		v.mu.Unlock()
+	}
+	v.mu.Lock()
+	v.process = nil
+	v.frame = nil
+	v.mu.Unlock()
+	if !completed {
+		r.a.paymentTrace(context.WithoutCancel(r.ctx), r.id, "verification", "review", protocolPublicCode(runtimeCode), time.Since(started))
+		return cslive.Failure(runtimeCode)
+	}
+	// The browser result is advisory. Recover reads the original transaction;
+	// only authoritative provider evidence settles money and continues renewal.
+	return nil
+}
+func safeActionCode(s string) string {
+	switch s {
+	case "", "authentication_required", "payment_intent_authentication_failure", "card_declined", "expired_card", "incorrect_cvc", "processing_error", "preflight_failed", "context_mismatch", "action_not_required", "csp_blocked", "sdk_unavailable", "payment_intent_unexpected_state", "payment_intent_invalid_parameter", "invalid_client_secret", "resource_missing", "api_connection_error", "sdk_error", "unknown":
+		return s
+	}
+	return "unknown"
+}
+
+func safeActionOutcome(s string) string {
+	switch s {
+	case "sdk_returned", "sdk_error", "sdk_exception", "page_error":
+		return s
+	}
+	return "unknown"
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}

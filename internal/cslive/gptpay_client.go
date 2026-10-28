@@ -50,7 +50,6 @@ type gptpay_QuoteOptions struct {
 }
 
 type gptpay_PayOptions struct {
-	WorkspaceName                         string
 	Country, Plan, CheckoutType, Interval string
 	Seats, Seats5x                        int
 	Billing                               model_Billing
@@ -211,7 +210,6 @@ func (c *gptpay_PaymentClient) Pay(ctx context.Context, s model_Session, card mo
 	if e != nil {
 		return model_Result{}, e
 	}
-	t.platform.WorkspaceName = o.WorkspaceName
 	return t.execute(o.Billing, &card, o.ExpectedAmount, o.ApprovePayment, o.CheckoutType), nil
 }
 

@@ -15,7 +15,6 @@ import (
 const chatgpt_PlatformBase = "https://chatgpt.com"
 
 type chatgpt_Platform struct {
-	WorkspaceName string
 	// PromoCode 仅存在于本次提链调用，不写支付快照。
 	PromoCode string
 	Profile   protocol_BrowserProfile
@@ -288,11 +287,7 @@ func (p *chatgpt_Platform) Checkout(planName string, token [2]string, uiMode str
 	}
 	if model_IsTeamPlan(p.CP.Plan) {
 		cfg := p.CP.TeamSeatConfig()
-		workspace := strings.TrimSpace(p.WorkspaceName)
-		if workspace == "" {
-			workspace = "Team"
-		}
-		body.Set("team_plan_data", protocol_O("workspace_name", workspace, "quantity", cfg.Total(), "seat_quantity", cfg.Total(), "price_interval", cfg.Interval, "seat_quantities", cfg.Quantities()))
+		body.Set("team_plan_data", protocol_O("workspace_name", "Team", "quantity", cfg.Total(), "seat_quantity", cfg.Total(), "price_interval", cfg.Interval, "seat_quantities", cfg.Quantities()))
 		if p.PromoCode != "" {
 			body.Set("promo_code", p.PromoCode)
 		}

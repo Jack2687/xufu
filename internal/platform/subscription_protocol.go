@@ -175,11 +175,11 @@ func (a *App) executeProtocolSubscription(parent context.Context, j *Job) {
 	go run.heartbeat(ctx, cancel, done)
 	defer func() { cancel(); <-done }()
 	var credentials checkoutInput
-	var enc, product, workspace string
+	var enc, product string
 	var seats, premium int
-	err = a.DB.QueryRow(ctx, `SELECT c.credentials_enc,o.product_id,o.seats,c.premium_seats,o.country,o.keep_renewal,o.email,s.max_amount,s.currency,c.workspace_name
+	err = a.DB.QueryRow(ctx, `SELECT c.credentials_enc,o.product_id,o.seats,c.premium_seats,o.country,o.keep_renewal,o.email,s.max_amount,s.currency
  FROM checkout_runs c JOIN orders o ON o.id=c.order_id JOIN subscription_runs s ON s.order_id=o.id WHERE o.id=$1`, run.id).
-		Scan(&enc, &product, &seats, &premium, &run.country, &run.keep, &run.email, &run.maxAmount, &run.currency, &workspace)
+		Scan(&enc, &product, &seats, &premium, &run.country, &run.keep, &run.email, &run.maxAmount, &run.currency)
 	if err != nil {
 		run.fail(err)
 		return
@@ -205,7 +205,7 @@ func (a *App) executeProtocolSubscription(parent context.Context, j *Job) {
 	if plan == "" {
 		plan = product
 	}
-	options := cslive.PayOptions{Country: run.country, Plan: plan, WorkspaceName: workspace, CheckoutType: "hosted", Billing: cslive.Billing{
+	options := cslive.PayOptions{Country: run.country, Plan: plan, CheckoutType: "hosted", Billing: cslive.Billing{
 		Name: strings.TrimSpace(str(billing, "first_name") + " " + str(billing, "last_name")), Email: run.email,
 		Line1: str(billing, "line1"), City: str(billing, "city"), State: str(billing, "state"), PostalCode: str(billing, "postal_code"), Country: str(billing, "country"),
 	}, ApprovePayment: run.approve}

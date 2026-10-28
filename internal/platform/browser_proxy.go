@@ -128,6 +128,12 @@ func upstreamProxyTunnel(ctx context.Context, u *url.URL, target string, dial fu
 	return &proxyBufferedConn{Conn: c, reader: reader}, nil
 }
 func startBrowserProxy(parent context.Context, tunnel func(context.Context, string) (net.Conn, error)) (*browserProxyInput, func(), error) {
+	return startBrowserProxyChecked(parent, tunnel, func(_ context.Context, host string) bool { return browserProxyHost(host) })
+}
+
+// The official SDK may navigate a bank's public HTTPS verification page.
+// This private relay remains bound to the original order's provider session.
+func startBrowserProxyChecked(parent context.Context, tunnel func(context.Context, string) (net.Conn, error), allow func(context.Context, string) bool) (*browserProxyInput, func(), error) {
 	ctx, cancel := context.WithCancel(parent)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -144,11 +150,16 @@ func startBrowserProxy(parent context.Context, tunnel func(context.Context, stri
 			return
 		}
 		host, port, e := net.SplitHostPort(r.Host)
-		if r.Method != http.MethodConnect || e != nil || port != "443" || !browserProxyHost(strings.ToLower(host)) {
+		if r.Method != http.MethodConnect || e != nil || port != "443" {
 			w.WriteHeader(403)
 			return
 		}
 		cctx, stop := context.WithTimeout(ctx, 20*time.Second)
+		if !allow(cctx, strings.ToLower(host)) {
+			stop()
+			w.WriteHeader(403)
+			return
+		}
 		up, e := tunnel(cctx, net.JoinHostPort(host, port))
 		stop()
 		if e != nil {

@@ -5,9 +5,9 @@ import {date,notify,type Row} from '../lib'
 const props=defineProps<{events:Row[];links?:Row[];status?:string}>()
 const rounds=computed(()=>Math.max(1,...props.events.map(e=>Number(e.round)||1),...(props.links||[]).map(e=>Number(e.round)||1)))
 const statusLabel:Record<string,string>={running:'开始',completed:'完成',failed:'失败',review:'待核实',waiting:'等待'}
-const diagnosticLabels:Record<string,string>={dns_ms:'域名解析',connect_ms:'建立连接',tls_ms:'安全握手',first_byte_ms:'等待首字节',connection_ready_ms:'通道就绪',request_write_ms:'请求发送',response_wait_ms:'响应等待',network_stage_elapsed_ms:'网络阶段耗时',request_attempt:'请求尝试次数',network_stage:'网络阶段',protocol_code:'流程诊断码',network_reason:'网络原因',provider_code:'上游错误码',decline_code:'拒付分类',response_kind:'响应类型'}
+const diagnosticLabels:Record<string,string>={sdk_outcome:'SDK 处理结果',sdk_code:'SDK 诊断码',diagnostic_source:'状态来源',payment_state:'付款状态',raw_status:'原交易状态',raw_state:'原流程状态',raw_payment_status:'原付款状态',next_action_type:'后续验证类型',sdk_action_type:'SDK 验证类型',sdk_has_stripe_js:'提供 SDK 验证入口',sdk_has_3ds_source:'提供 3DS 资源',dns_ms:'域名解析',connect_ms:'建立连接',tls_ms:'安全握手',first_byte_ms:'等待首字节',connection_ready_ms:'通道就绪',request_write_ms:'请求发送',response_wait_ms:'响应等待',network_stage_elapsed_ms:'网络阶段耗时',request_attempt:'请求尝试次数',network_stage:'网络阶段',protocol_code:'流程诊断码',network_reason:'网络原因',provider_code:'上游错误码',decline_code:'拒付分类',response_kind:'响应类型'}
 const diagnosticValues:Record<string,string>={timeout:'超时',proxy_connect:'代理隧道连接失败',tls:'安全握手失败',dns:'域名解析失败',connection:'建立连接',request_write:'发送请求',response_headers:'等待响应头',response_body:'读取响应内容',json:'JSON',html:'HTML 页面',empty:'空响应',other:'其他格式'}
-const diagnosticText=(key:string,value:unknown)=>key.endsWith('_ms')?`${value} 毫秒`:diagnosticValues[String(value)]||String(value)
+const diagnosticText=(key:string,value:unknown)=>typeof value==='boolean'?(value?'是':'否'):key.endsWith('_ms')?`${value} 毫秒`:diagnosticValues[String(value)]||String(value)
 const duration=(v:unknown)=>Number(v)>=1000?`${(Number(v)/1000).toFixed(1)} 秒`:`${Number(v)||0} 毫秒`
 async function copyLink(value:string){
  try{

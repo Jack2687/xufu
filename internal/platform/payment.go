@@ -21,6 +21,7 @@ type paymentSession struct {
 }
 
 var paymentMessages = map[string]string{
+	"admin_closed":                    "管理员已关闭本站订单并释放冻结服务费，后续办理已停止。此操作不撤销已提交的银行卡付款，原付款记录保留供核实。",
 	"checkout_fields_unavailable":     "官方付款页面字段尚未就绪，未继续提交付款。",
 	"payment_authorized":              "付款已授权，实际扣款尚未确认；系统不会再次提交付款。",
 	"payment_limit_exceeded":          "付款报价金额或币种异常，未提交付款，服务费已解冻。",
@@ -93,6 +94,7 @@ func (a *App) paymentRoutes(m *http.ServeMux) {
 		m.HandleFunc("POST "+prefix+"{id}/payment/check", a.require(false, a.checkPayment))
 	}
 	m.HandleFunc("POST /api/admin/orders/{id}/payment/check", a.require(true, a.checkPayment))
+	a.actionRoutes(m)
 }
 func (a *App) paymentDetails(ctx context.Context, id string) M {
 	if a.isLinkOnly(ctx, id) {
@@ -125,7 +127,7 @@ func (a *App) paymentDetails(ctx context.Context, id string) M {
 				result["message"] = "报价已核实，正在自动办理付款。"
 			}
 			if str(result, "state") == "action_required" {
-				result["message"] = "付款需要额外用户验证，流程已暂停，请联系运营核实。"
+				result["message"] = "付款等待官方验证，流程已暂停，请联系运营核实。"
 			}
 		}
 	}

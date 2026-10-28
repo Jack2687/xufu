@@ -180,3 +180,10 @@ CREATE TABLE IF NOT EXISTS subscription_protocol (
  expires_at timestamptz NOT NULL DEFAULT now()+interval '24 hours',
  updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Manual local fulfillment closure preserves the prior provider result category.
+CREATE TABLE IF NOT EXISTS order_closures (
+ order_id text PRIMARY KEY REFERENCES orders(id),actor_id text NOT NULL REFERENCES users(id),
+ reason text NOT NULL,prior_status text NOT NULL,prior_payment_state text NOT NULL,payment_submitted boolean NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);

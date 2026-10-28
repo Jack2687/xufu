@@ -83,6 +83,9 @@ func (a *App) saveProviderDiagnostic(d providerDiagnostic) {
 	if d.Code != "" || d.Status >= http.StatusBadRequest {
 		state = "failed"
 	}
+	if d.Code == "verification_required" || d.Details["payment_state"] == "action_required" || (d.Phase == "verification" && d.Details["sdk_outcome"] != "sdk_returned") {
+		state = "review"
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_, err := a.DB.Exec(ctx, `INSERT INTO payment_trace_events(order_id,phase,state,code,round,elapsed_ms,created_at,http_status,request_id,diagnostics)

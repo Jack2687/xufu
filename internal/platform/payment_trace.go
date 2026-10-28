@@ -8,6 +8,7 @@ import (
 )
 
 var paymentPhases = map[string]string{
+	"verification":    "官方付款验证",
 	"session_refresh": "刷新账号授权", "account_check": "在线核对账号", "activation": "核实订阅生效",
 	"accepted": "申请受理与资料校验", "queue": "等待办理资源", "funds": "服务费处理", "complete": "订阅流程结束",
 	"proxy": "分配办理网络", "checkout": "生成结账信息", "network": "核对出口一致性",
@@ -16,6 +17,7 @@ var paymentPhases = map[string]string{
 	"result": "付款处理结果", "restart": "重建会话与结账信息", "renewal": "取消自动续费",
 }
 var traceCodes = map[string]string{
+	"action_runtime_unavailable": "验证窗口暂不可用，原交易保留待核实", "action_interrupted": "验证窗口已结束，原交易仍需核实",
 	"account_mismatch": "账号或空间不一致", "account_status_unknown": "暂未取得明确账号状态", "existing_subscription": "账号已有有效订阅", "personal_account_required": "请选择个人空间办理",
 	"session_refresh_unavailable": "当前授权不包含自动刷新凭据", "subscription_not_found": "订阅尚未同步", "activation_pending": "已付款，等待订阅同步", "activation_review": "已付款，订阅生效待核实", "plan_mismatch": "订阅套餐与本单不符", "internal_error": "阶段状态保存未完成",
 	"hold": "服务费已冻结", "release": "服务费已解冻", "charge": "服务费已结算", "kept": "按客户选择保留自动续费",

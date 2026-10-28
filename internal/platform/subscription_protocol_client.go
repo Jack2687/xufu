@@ -14,10 +14,9 @@ import (
 func (r *protocolRun) client(ttl int) (*cslive.Client, func(), error) {
 	var enc, proxyLease string
 	var expires time.Time
-	var cancelStarted bool
-	err := r.a.DB.QueryRow(r.ctx, `SELECT s.endpoint_enc,s.expires_at,COALESCE(c.proxy_lease_id,''),u.cancel_started
+	err := r.a.DB.QueryRow(r.ctx, `SELECT s.endpoint_enc,s.expires_at,COALESCE(c.proxy_lease_id,'')
  FROM order_proxy_sessions s JOIN resources p ON p.id=s.resource_id JOIN checkout_runs c ON c.order_id=s.order_id
- JOIN subscription_runs u ON u.order_id=s.order_id WHERE s.order_id=$1 AND p.enabled`, r.id).Scan(&enc, &expires, &proxyLease, &cancelStarted)
+ JOIN subscription_runs u ON u.order_id=s.order_id WHERE s.order_id=$1 AND p.enabled`, r.id).Scan(&enc, &expires, &proxyLease)
 	if err != nil || enc == "" {
 		return nil, nil, cslive.Failure("proxy_session_unavailable")
 	}
@@ -63,14 +62,8 @@ func (r *protocolRun) client(ttl int) (*cslive.Client, func(), error) {
 				return cslive.Failure("checkpoint_failed")
 			}
 		}
-		if method == "POST" && u.Path == "/backend-api/subscriptions/cancel" {
-			if cancelStarted {
-				return cslive.Failure("cancellation_pending")
-			}
-			// The checkpoint persisted cancel_started before this guard. Never
-			// allow a transport retry or recovery to repeat an uncertain write.
-			cancelStarted = true
-		}
+		// Cancellation retry/recovery follows the supplied protocol: a transient
+		// failure is rechecked before its bounded retry. Never reset payment state.
 		return nil
 	}
 	timezone := map[string]string{"PH": "Asia/Manila", "US": "America/New_York", "JP": "Asia/Tokyo", "SG": "Asia/Singapore", "GB": "Europe/London", "EG": "Africa/Cairo", "TR": "Europe/Istanbul"}[r.country]
@@ -180,7 +173,8 @@ func (r *protocolRun) progress(p cslive.Progress) {
 }
 
 func (r *protocolRun) event(event map[string]any) {
-	if str(event, "event") != "http_request" && str(event, "event") != "payment_error" {
+	kind := str(event, "event")
+	if kind != "http_request" && kind != "payment_error" && kind != "payment_diagnostic" {
 		return
 	}
 	phase := protocolDiagnosticPhase(str(event, "path"), r.last.Phase)
@@ -192,6 +186,14 @@ func (r *protocolRun) event(event map[string]any) {
 		requestID = ""
 	}
 	details := M{"protocol_code": str(event, "errorCode"), "provider_code": str(event, "providerCode"), "decline_code": str(event, "declineCode"), "request_attempt": event["attempt"], "network_stage": str(event, "networkStage")}
+	if kind == "payment_diagnostic" {
+		phase = "checking"
+		for source, dest := range map[string]string{"diagnosticSource": "diagnostic_source", "paymentState": "payment_state", "rawStatus": "raw_status", "rawState": "raw_state", "rawPaymentStatus": "raw_payment_status", "nextActionType": "next_action_type", "sdkActionType": "sdk_action_type", "sdkHasStripeJS": "sdk_has_stripe_js", "sdkHasThreeDS2Source": "sdk_has_3ds_source"} {
+			if v, ok := event[source]; ok {
+				details[dest] = v
+			}
+		}
+	}
 	for source, dest := range map[string]string{"connectionReadyMs": "connection_ready_ms", "requestWriteMs": "request_write_ms", "firstByteMs": "first_byte_ms", "responseWaitMs": "response_wait_ms", "networkStageElapsedMs": "network_stage_elapsed_ms"} {
 		if v, ok := event[source]; ok {
 			details[dest] = v

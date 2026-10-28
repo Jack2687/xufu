@@ -1,3 +1,11 @@
+# 2026-10-29 最新订阅对齐规则（覆盖下方冲突的历史说明）
+
+用户新增授权：支付全监控允许管理员人工关闭未结束订单、停止后续办理并释放仍冻结的服务费。保留 submitted、原交易/代理/账单及关闭原因；不代表银行撤销或退款。已成功/已结算订单拒绝此入口；关闭、资金与审计幂等原子化，旧 worker 必须失效。客户不能手动关闭付款。
+
+用户再次要求新订阅办理除后台随机账单与整单固定 IP 外，付款流程遵循 cs-live-source。完整说明见 docs/subscription-protocol.md。新协议取消采用原包有限重试/复查，不能再叠加旧“一律最多一次”拦截；旧单/独立工具规则不变。原包官方 SDK 接续在服务器私有浏览器执行，只处理原 PaymentIntent，之后 Recover 权威核实；管理员只有内存画面及有限输入，客户固定七步和核心信息边界保持。真实验证由获授权人员完成，不能伪造结果或重新付款。
+
+发布前 scripts/active-work.sql 允许无 worker/无租约且完整持久化的 protocol review 原单跨重启保留；任何执行中的任务、验证窗口或不完整记录仍阻止切换。不得清空检查点、延长原代理期限或换 IP 强行恢复。下文“尚未发布”均为历史记录，当前部署状态以工作区 runbook 为准。
+
 # 序付 · XUPAY
 
 - 正式部署目标：GitHub yigerende/xufu，目录 /opt/1panel/apps/xufu，Compose 项目 xufu，容器 xufu-app / xufu-postgres，对外端口5496（6948被其他项目使用，不可占用）。先读 docs/deployment.md 及工作区 _codex-memory/xupay-production-runbook.md。

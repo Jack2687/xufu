@@ -13,6 +13,11 @@ import (
 func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := r.PathValue("id")
+	action := strings.HasSuffix(r.URL.Path, "/payment/action")
+	if action && current(r).Role != "admin" {
+		fail(w, 403, "仅管理员可处理付款验证")
+		return
+	}
 	if !a.limit(ctx, "payment_check:"+current(r).ID, 5) {
 		fail(w, 429, "核实过于频繁，请稍后重试")
 		return
@@ -48,6 +53,10 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "当前状态无需核实或正在处理中")
 		return
 	}
+	if action && state != "action_required" {
+		fail(w, 409, "原交易当前不需要交互验证")
+		return
+	}
 	if enc == "" || !expiry.After(time.Now()) {
 		fail(w, 409, "本次办理恢复授权已到期，请联系运营核实；不会再次付款")
 		return
@@ -69,6 +78,9 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ttl := num(a.config(ctx, "payment"), "result_timeout_seconds", 120) + 120
+	if action {
+		ttl += 600
+	}
 	proxy, err := a.acquireOrderProxyTx(ctx, tx, id, country, time.Duration(ttl+15)*time.Second)
 	if err != nil {
 		fail(w, 409, "原订单代理暂不可用，请稍后核实")
@@ -91,14 +103,41 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 	runCtx, cancel := context.WithTimeout(context.Background(), time.Duration(ttl)*time.Second)
 	run := &protocolRun{a: a, ctx: runCtx, id: id, attempt: attempt, lease: lease, account: cp.AccountID, email: email, country: country, keep: keep, maxAmount: limit, currency: currency, last: cp}
 	s := &paymentSession{attempt: attempt, cancel: cancel}
+	var verification *paymentAction
+	if action {
+		verification = &paymentAction{id: uid(), actor: current(r).ID, state: "preparing", expires: time.Now().Add(10 * time.Minute), cancel: cancel}
+	}
 	a.paymentMu.Lock()
 	if a.payments == nil {
 		a.payments = map[string]*paymentSession{}
 	}
 	a.payments[id] = s
+	if action {
+		if a.paymentActions == nil {
+			a.paymentActions = map[string]*paymentAction{}
+		}
+		for key, entry := range a.paymentActions {
+			entry.mu.Lock()
+			expired := entry.expires.Before(time.Now())
+			entry.mu.Unlock()
+			if expired {
+				delete(a.paymentActions, key)
+			}
+		}
+		a.paymentActions[id] = verification
+	}
 	a.paymentMu.Unlock()
 	go func() {
 		defer cancel()
+		if verification != nil {
+			defer func() {
+				verification.mu.Lock()
+				verification.state = "finished"
+				verification.frame = nil
+				verification.process = nil
+				verification.mu.Unlock()
+			}()
+		}
 		defer func() {
 			a.paymentMu.Lock()
 			if a.payments[id] == s {
@@ -116,6 +155,12 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 		}
 		defer closeClient()
 		cp.Proxy = client.Config.Proxy
+		if verification != nil {
+			if err = run.runPaymentAction(cp, verification); err != nil {
+				run.fail(err)
+				return
+			}
+		}
 		result, err := client.Recover(runCtx, cp)
 		if err != nil {
 			run.fail(err)
@@ -123,5 +168,9 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 		}
 		run.finish(result)
 	}()
-	out(w, 202, M{"accepted": true})
+	response := M{"accepted": true}
+	if verification != nil {
+		response["action_id"] = verification.id
+	}
+	out(w, 202, response)
 }

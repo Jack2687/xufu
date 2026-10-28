@@ -40,6 +40,9 @@ type App struct {
 	Static              string
 	paymentMu           sync.Mutex
 	payments            map[string]*paymentSession
+	paymentActions      map[string]*paymentAction
+	actionStart         actionStarter
+	actionProbeClient   func(string, time.Duration) (*http.Client, func(), error)
 	providerDiagnostics chan providerDiagnostic
 	diagnosticDrops     atomic.Uint64
 	diagnosticFailures  atomic.Uint64

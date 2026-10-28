@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xupay/internal/cslive"
 )
 
 var safeProviderCodes = map[string]bool{
@@ -72,6 +73,34 @@ func safeDiagnosticDetails(input M) M {
 	out := M{}
 	for k, v := range input {
 		switch k {
+		case "sdk_code":
+			if s, ok := v.(string); ok {
+				out[k] = safeActionCode(s)
+			}
+		case "sdk_outcome":
+			if s, ok := v.(string); ok {
+				out[k] = safeActionOutcome(s)
+			}
+		case "next_action_type", "sdk_action_type":
+			if s, ok := v.(string); ok && s != "" {
+				out[k] = cslive.SafeActionType(s)
+			}
+		case "raw_status", "raw_state", "raw_payment_status":
+			if s, ok := v.(string); ok && s != "" {
+				out[k] = cslive.SafePaymentStatus(s)
+			}
+		case "diagnostic_source":
+			if s, ok := v.(string); ok && s != "" {
+				out[k] = cslive.SafeDiagnosticSource(s)
+			}
+		case "payment_state":
+			if s, ok := v.(string); ok && (s == "charged" || s == "not_charged" || s == "action_required" || s == "authorized" || s == "pending" || s == "unknown") {
+				out[k] = s
+			}
+		case "sdk_has_stripe_js", "sdk_has_3ds_source":
+			if b, ok := v.(bool); ok {
+				out[k] = b
+			}
 		case "dns_ms", "connect_ms", "tls_ms", "first_byte_ms", "connection_ready_ms", "request_write_ms", "response_wait_ms", "network_stage_elapsed_ms", "request_attempt":
 			var n int64
 			switch x := v.(type) {
