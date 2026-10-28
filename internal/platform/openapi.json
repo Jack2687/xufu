@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "序付 XUPAY 开发者 API",
-    "version": "1.4.0",
-    "description": "支持单独提链与订阅连续办理。订阅办理一次提交，自动付款并按选择保留或关闭续费；不返回结账链接或内部请求。服务费使用整数分 R。"
+    "version": "1.5.0",
+    "description": "支持单独提链与订阅连续办理。订阅办理一次提交，自动付款并按选择保留或关闭续费；付款、订阅生效、续费分别返回业务状态。订阅订单不返回结账链接或内部诊断。服务费使用整数分 R。"
   },
   "servers": [
     {
@@ -225,7 +225,8 @@
                       }
                     },
                     "payment_connected": {
-                      "const": false
+                      "type": "boolean",
+                      "description": "当前付款功能是否开放且运行环境可用，不代表实际支付已验证成功"
                     }
                   },
                   "required": [],
@@ -634,7 +635,8 @@
                       "$ref": "#/components/schemas/Membership"
                     },
                     "payment_connected": {
-                      "const": false
+                      "type": "boolean",
+                      "description": "当前付款功能是否开放且运行环境可用，不代表实际支付已验证成功"
                     }
                   },
                   "required": [],
@@ -1093,7 +1095,7 @@
     "/api/v1/orders": {
       "post": {
         "summary": "创建方案或准备结账",
-        "description": "workflow=subscription 时提交 Session、真实银行卡和 keep_renewal，一次执行生成链接、按所选方案实时含税金额付款、结果核实及续费设置；只返回业务进度。服务费受理时冻结，付款确认后结算。卡资料不持久化，满载返回 429；重复幂等请求不重发付款。省略 workflow 保持原单独提链/草稿行为。",
+        "description": "workflow=subscription 时一次提交 Session、真实银行卡和 keep_renewal，系统自动办理付款、订阅生效核实和续费设置。账单由后台选择，无需客户提交；不返回结账链接。服务费受理时冻结，付款确认后结算。生效或续费异常保留付款成功，禁止重建订单重复付款。卡资料不持久化；重试创建须沿用原 Idempotency-Key。省略 workflow 或 checkout 时仅提链/草稿，生成链接后即结束，不进入付款。",
         "operationId": "post_orders",
         "security": [
           {
@@ -1129,7 +1131,8 @@
                       "type": "string"
                     },
                     "payment_connected": {
-                      "const": false
+                      "type": "boolean",
+                      "description": "当前付款功能是否开放且运行环境可用，不代表实际支付已验证成功"
                     },
                     "replayed": {
                       "type": "boolean"
@@ -1143,8 +1146,9 @@
                 },
                 "example": {
                   "id": "ORDER_ID",
-                  "status": "draft",
-                  "payment_connected": false
+                  "status": "queued",
+                  "checkout_connected": true,
+                  "payment_connected": true
                 }
               }
             }
@@ -1262,7 +1266,15 @@
                 },
                 "country": "US",
                 "seats": 1,
-                "accepted": true
+                "accepted": true,
+                "workflow": "subscription",
+                "keep_renewal": false,
+                "card": {
+                  "number": "YOUR_AUTHORIZED_CARD_NUMBER",
+                  "month": "MM",
+                  "year": "YYYY",
+                  "cvc": "CVC"
+                }
               }
             }
           }
@@ -1327,7 +1339,10 @@
                       "source": "api",
                       "renewal": "not_started",
                       "created_at": "2026-10-27T00:00:00Z",
-                      "updated_at": "2026-10-27T00:00:00Z"
+                      "updated_at": "2026-10-27T00:00:00Z",
+                      "workflow": "link",
+                      "keep_renewal": false,
+                      "activation": "not_checked"
                     }
                   ]
                 }
@@ -1431,7 +1446,7 @@
     "/api/v1/orders/{id}": {
       "get": {
         "summary": "订单详情与进度",
-        "description": "返回订单、脱敏业务阶段、结账链接与付款状态。仅能访问所属账户；不返回银行卡、安全码、代理凭据或内部请求。",
+        "description": "返回所属订单的业务进度。付款看 payment.state，生效看 order.activation，续费看 order.renewal，不能只凭 order.status 判定全部完成。订阅订单不返回结账链接、内部请求或管理员诊断；不会返回银行卡、会话凭据及账单资料。",
         "operationId": "get_orders_id",
         "security": [
           {
@@ -1465,10 +1480,10 @@
                     "email": "subscriber@example.com",
                     "country": "US",
                     "seats": 1,
-                    "status": "draft",
+                    "status": "succeeded",
                     "fee": 10000,
                     "source": "api",
-                    "renewal": "not_started",
+                    "renewal": "disabled",
                     "created_at": "2026-10-27T00:00:00Z",
                     "updated_at": "2026-10-27T00:00:00Z",
                     "price_snapshot": {
@@ -1480,15 +1495,34 @@
                       "source": "automatic",
                       "fee_override": null,
                       "spent": 0
-                    }
+                    },
+                    "workflow": "subscription",
+                    "keep_renewal": false,
+                    "activation": "active"
                   },
                   "events": [
                     {
-                      "stage": "draft",
-                      "message": "订阅方案已保存；未提交付款。",
-                      "created_at": "2026-10-27T00:00:00Z"
+                      "stage": "renewal",
+                      "message": "自动续费已关闭，当前订阅有效期保留。",
+                      "created_at": "2026-10-28T00:00:00Z"
                     }
-                  ]
+                  ],
+                  "checkout": {
+                    "hidden": true,
+                    "ready": false
+                  },
+                  "payment": {
+                    "enabled": true,
+                    "attempt_id": "ATTEMPT_ID",
+                    "state": "succeeded",
+                    "amount": 1500,
+                    "currency": "usd",
+                    "charged_amount": 1500,
+                    "charged_currency": "usd",
+                    "last4": "1234",
+                    "fee_state": "charged",
+                    "message": "付款成功"
+                  }
                 }
               }
             }
@@ -1727,7 +1761,7 @@
       "post": {
         "operationId": "payment_prepare",
         "summary": "准备付款报价",
-        "description": "要求有效长链接与可用余额。付款阶段使用运行机器默认网络，不使用提链代理。接收获授权的银行卡，在内存中准备含税报价；不提交扣款。繁忙时返回 429，请稍后由客户重新提交，不持久化银行卡。",
+        "description": "仅用于兼容允许付款的历史 checkout 订单；新 link 订单不支持，subscription 已自动办理，不应调用。付款使用订单固定网络会话。只准备报价、不提交扣款；同一订单重试沿用原账单，敏感卡资料不持久化。",
         "security": [
           {
             "BearerKey": []
@@ -1849,7 +1883,7 @@
       "post": {
         "operationId": "payment_confirm",
         "summary": "确认付款金额",
-        "description": "须明确取得客户对当前含税金额的同意，再提交当前 attempt_id、amount、currency。重复确认同一任务不会再次提交付款；响应不明应查询订单。",
+        "description": "仅用于允许人工确认的历史付款流程；连续订阅自动确认，不需另行调用。必须已获得客户同意，提交当前 attempt_id、amount、currency；重复确认同一任务不再次付款。超时先查订单，未知或成功结果禁止新建订单重付。",
         "security": [
           {
             "BearerKey": []
@@ -1961,7 +1995,7 @@
       "post": {
         "operationId": "payment_check",
         "summary": "核实付款结果",
-        "description": "仅核实原订单付款结果，不重新提交卡片或扣款。需额外验证时由客户完成官方验证后再核实。",
+        "description": "只读核实原订单付款结果，不重新提交银行卡或扣款。需要额外验证时停止自动付款；连续订阅请联系运营核实，不返回内部验证链接。",
         "security": [
           {
             "BearerKey": []
@@ -2150,7 +2184,8 @@
         "properties": {
           "accessToken": {
             "type": "string",
-            "description": "刚获取的完整令牌；不会在响应或日志回显"
+            "description": "刚获取的完整令牌；不会在响应或日志回显",
+            "writeOnly": true
           },
           "user": {
             "type": "object",
@@ -2186,6 +2221,18 @@
             "type": "string",
             "format": "date-time",
             "description": "会话到期时间，与 Token 的 exp 取较早值"
+          },
+          "sessionToken": {
+            "type": "string",
+            "writeOnly": true,
+            "maxLength": 32768,
+            "description": "可选。原 Session 已包含的会话凭据可用于后台恢复授权；仅加密短期保存，不在响应中返回。无需为只有 AT 的 Session 补造此字段。"
+          },
+          "cookies": {
+            "type": "string",
+            "writeOnly": true,
+            "maxLength": 65536,
+            "description": "可选。已有的会话 Cookie 字符串；仅保留受支持的会话凭据，短期加密保存，不回显。"
           }
         },
         "additionalProperties": true
@@ -2253,7 +2300,7 @@
           "prepare": {
             "type": "boolean",
             "default": false,
-            "description": "true：排队生成结账链接；false：仅草稿。均不扣费、不付款。"
+            "description": "仅 workflow=checkout 或省略时使用：true 排队提链，false 仅草稿，均不付款；subscription 固定自动开始，忽略此值。"
           },
           "workspace_name": {
             "type": "string",
@@ -2273,7 +2320,7 @@
               "subscription"
             ],
             "default": "checkout",
-            "description": "checkout 保留原提链行为；subscription 自动生成链接、付款并处理续费。"
+            "description": "checkout 或省略仅创建提链/草稿，响应 workflow=link；subscription 自动付款、核实生效并处理续费。"
           },
           "card": {
             "type": "object",
@@ -2317,7 +2364,26 @@
           "seats",
           "accepted"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "workflow": {
+                  "const": "subscription"
+                }
+              },
+              "required": [
+                "workflow"
+              ]
+            },
+            "then": {
+              "required": [
+                "card"
+              ]
+            }
+          }
+        ]
       },
       "Order": {
         "type": "object",
@@ -2356,7 +2422,8 @@
               "failed",
               "cancelled",
               "review"
-            ]
+            ],
+            "description": "订阅付款成功后的生效或续费核实结束时，status 也可能为 succeeded 且 activation/renewal 为 review；必须分别判断三个结果，不能只看总状态。"
           },
           "fee": {
             "type": "integer",
@@ -2371,7 +2438,15 @@
           },
           "renewal": {
             "type": "string",
-            "description": "kept 保留；pending 处理中；disabled 已关闭；review 待核实；not_started 未开始。"
+            "enum": [
+              "not_started",
+              "pending",
+              "kept",
+              "disabled",
+              "review",
+              "retrying"
+            ],
+            "description": "not_started 未开始；pending 等待处理；kept 按客户选择保留；disabled 已确认关闭；review 关闭暂未确认；retrying 正在继续核实。付款成功但生效待核实时，不代表已执行取消。"
           },
           "created_at": {
             "type": "string",
@@ -2387,12 +2462,24 @@
           },
           "workflow": {
             "enum": [
+              "link",
               "checkout",
               "subscription"
-            ]
+            ],
+            "description": "新提链或草稿返回 link；subscription 为连续订阅办理；checkout 仅兼容历史订单。"
           },
           "keep_renewal": {
             "type": "boolean"
+          },
+          "activation": {
+            "type": "string",
+            "enum": [
+              "not_checked",
+              "pending",
+              "active",
+              "review"
+            ],
+            "description": "not_checked 历史订单或非订阅订单未记录；pending 尚未确认生效；active 已确认生效且套餐匹配；review 已付款但生效待核实。须结合 payment.state 判断，不得重新付款。"
           }
         },
         "required": [],
@@ -2565,7 +2652,7 @@
           },
           "url": {
             "type": "string",
-            "description": "仅本人或管理员可见的最终结账链接"
+            "description": "仅独立提链订单向所属客户返回最终结账链接。连续订阅订单不返回。"
           },
           "expires_at": {
             "type": "string",
@@ -2589,6 +2676,10 @@
           "next_check_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "hidden": {
+            "type": "boolean",
+            "description": "订阅订单固定为 true，ready=false，不提供 url。"
           }
         },
         "required": [],
@@ -2615,7 +2706,8 @@
               "succeeded",
               "failed",
               "cancelled"
-            ]
+            ],
+            "description": "succeeded 表示付款成功，后续订阅生效和续费看 order.activation/order.renewal；review/checking/action_required 均禁止重新提交扣款。"
           },
           "amount": {
             "type": [
@@ -2647,6 +2739,26 @@
               "released",
               "charged"
             ]
+          },
+          "charged_amount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "有明确实收证据时返回的最小币种单位金额；null 表示未取得该金额证据，不能据此判为未付款。"
+          },
+          "charged_currency": {
+            "type": "string",
+            "description": "实收金额币种；未取得实收金额时为空字符串。"
+          },
+          "error_code": {
+            "type": "string",
+            "description": "平台公开的固定业务原因分类；不含原始上游错误。"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }
