@@ -45,6 +45,8 @@ func renewalStatus(ctx context.Context, c *http.Client, in checkoutInput) (activ
 }
 
 func (a *App) runRenewal(ctx context.Context, id, lease string) {
+	startedAt := time.Now()
+	a.paymentTrace(ctx, id, "renewal", "running", "", 0)
 	var enc string
 	var expiry time.Time
 	var started bool
@@ -65,6 +67,7 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 		} else {
 			client, closeClient, err := a.openRenewalClient(ctx)
 			if err != nil {
+				a.paymentTrace(ctx, id, "renewal", "waiting", "proxy_unavailable", time.Since(startedAt))
 				a.waitRenewalProxy(ctx, id, lease, false)
 				return
 			}
@@ -122,7 +125,24 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 	if _, e = tx.Exec(ctx, "INSERT INTO order_events(order_id,stage,message) VALUES($1,'renewal',$2)", id, message); e != nil {
 		return
 	}
-	tx.Commit(ctx)
+	if state == "disabled" || state == "review" {
+		traceState := "completed"
+		if state == "review" {
+			traceState = "review"
+		}
+		if paymentTraceTx(ctx, tx, id, "complete", traceState, state) != nil {
+			return
+		}
+	}
+	if tx.Commit(ctx) == nil {
+		traceState := "completed"
+		if state == "pending" {
+			traceState = "waiting"
+		} else if state == "review" {
+			traceState = "review"
+		}
+		a.paymentTrace(ctx, id, "renewal", traceState, state, time.Since(startedAt))
+	}
 }
 
 func (a *App) claimRenewal(ctx context.Context) (string, string, error) {

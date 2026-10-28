@@ -3,6 +3,7 @@
 import readline from 'node:readline'
 import {pathToFileURL} from 'node:url'
 import fs from 'node:fs'
+import {isIP} from 'node:net'
 
 const currencies = new Set(['php','usd','jpy','sgd','gbp','egp','try'])
 export function checkoutIdentity(raw) {
@@ -13,7 +14,15 @@ export function checkoutIdentity(raw) {
   return m[1]
 }
 export function allowedHost(host) {
-  return ['pay.openai.com','chatgpt.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
+  return ['pay.openai.com','checkout.stripe.com','chatgpt.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
+}
+export function paymentProxy(input) {
+  const p=input.proxy
+  if(!p?.server||!p.username||!p.password||!isIP(input.expected_ip||''))throw Error('proxy_session_unavailable')
+  const u=new URL(p.server)
+  if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||!u.port||u.username||u.password||u.search||u.hash||u.pathname!=='/')throw Error('proxy_session_unavailable')
+  if(!Number.isSafeInteger(input.proxy_expires_at)||input.proxy_expires_at<=Date.now())throw Error('proxy_session_expired')
+  return {server:p.server,username:p.username,password:p.password}
 }
 export function snapshot(body, id) {
   // Hosted payment_pages responses identify the page with ppage_ and bind it
@@ -40,13 +49,28 @@ export async function run(input, commands, emit, dependencies={}) {
   try {
     if(dependencies.signal?.aborted)throw Error('cancelled')
     const id=checkoutIdentity(input.url)
+    const proxy=paymentProxy(input)
     const {chromium}=dependencies.playwright || await import('playwright')
     const chrome=process.env.PAYMENT_CHROME_PATH || (process.platform==='win32' && fs.existsSync('C:/Program Files/Google/Chrome/Application/chrome.exe')?'C:/Program Files/Google/Chrome/Application/chrome.exe':undefined)
-    browser=await chromium.launch({headless:true,executablePath:chrome,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp','--disable-background-networking','--disable-breakpad']})
+    browser=await chromium.launch({headless:true,executablePath:chrome,proxy,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp','--disable-background-networking','--disable-breakpad']})
     if(dependencies.signal?.aborted)throw Error('cancelled')
-    const ctx=await browser.newContext({locale:'en-US',timezoneId:'America/New_York',serviceWorkers:'block',acceptDownloads:false})
+    const ctx=await browser.newContext({locale:'en-US',timezoneId:'America/New_York',serviceWorkers:'block',acceptDownloads:false,proxy})
+    const checkExit=async()=>{
+      if(Date.now()>=input.proxy_expires_at)throw Error('proxy_session_expired')
+      let ip
+      try {
+        if(dependencies.exitIP)ip=await dependencies.exitIP()
+        else {const response=await ctx.request.get('https://ipinfo.io/json',{timeout:10000,maxRedirects:0});if(response.status()!==200)throw Error();ip=(await response.json()).ip;await response.dispose()}
+      }catch{throw Error('proxy_session_unavailable')}
+      if(!isIP(ip||''))throw Error('proxy_session_unavailable')
+      if(ip!==input.expected_ip)throw Error('proxy_session_changed')
+    }
+    stage('network_check')
+    await checkExit()
+    stage('network_verified')
     await ctx.route('**/*',async route=>{
       const req=route.request(), u=new URL(req.url())
+      if(Date.now()>=input.proxy_expires_at){blocked='proxy_session_expired';return route.abort()}
       if(u.protocol!=='https:' || !allowedHost(u.hostname) || u.username || u.password || (u.port&&u.port!=='443')) return route.abort()
       if(req.method()==='POST' && /\/(confirm|pay|capture)$/.test(u.pathname)) {
         if(input.mode==='check'||!permit||sent) {blocked='duplicate_blocked';return route.abort()}
@@ -121,11 +145,15 @@ export async function run(input, commands, emit, dependencies={}) {
     clearTimeout(quoteTimer)
     if(command.value?.type!=='confirm') return done('cancelled','quote_expired')
     if(!latest.taxReady||latest.amount!==quote.amount||latest.currency!==quote.currency) return done('failed','amount_changed')
+    stage('network_check')
+    await checkExit()
+    stage('network_verified')
     permit=true
     stage('confirming')
     const button=await find(['button[data-testid="hosted-payment-submit-button"]','button.SubmitButton','button[type="submit"]'])
     if(!button)throw Error('checkout_fields_unavailable')
     await button.click({timeout:15000})
+    stage('result_check')
     const until=Date.now()+input.result_seconds*1000
     while(Date.now()<until) {
       if(latest?.paid) return done('succeeded')
@@ -138,12 +166,12 @@ export async function run(input, commands, emit, dependencies={}) {
     return done(sent?'review':'failed',sent?'result_unconfirmed':'verification_required')
   } catch (e) {
     // Never propagate exception strings: Playwright often includes filled values.
-    const safeCodes=new Set(['unsupported_checkout','quote_unavailable'])
-    return done(sent?'review':'failed',sent?'result_unconfirmed':networkFailed?'network_connection_failed':safeCodes.has(e.message)?e.message:'preparation_failed')
+    const safeCodes=new Set(['unsupported_checkout','quote_unavailable','proxy_session_unavailable','proxy_session_expired','proxy_session_changed'])
+    return done(sent?'review':'failed',sent?'result_unconfirmed':safeCodes.has(blocked)?blocked:networkFailed?'network_connection_failed':safeCodes.has(e.message)?e.message:'preparation_failed')
   } finally {
     clearTimeout(quoteTimer)
     dependencies.signal?.removeEventListener('abort',abort)
-    input.card={};input.billing={}
+    input.card={};input.billing={};input.proxy={}
     await browser?.close().catch(()=>{})
   }
 }

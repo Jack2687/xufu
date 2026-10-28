@@ -116,14 +116,43 @@ func (a *App) claim(ctx context.Context, kind string) (*Job, error) {
 			}
 			return nil, tx.Commit(ctx)
 		}
-		p, err := a.acquireProxyTx(ctx, tx, country, time.Duration(num(cfg, "task_timeout_seconds", 180)+15)*time.Second)
+		p, err := a.acquireOrderProxyTx(ctx, tx, j.OrderID, country, time.Duration(num(cfg, "task_timeout_seconds", 180)+15)*time.Second)
 		if errors.Is(err, ErrProxyUnavailable) {
+			if _, e = tx.Exec(ctx, `INSERT INTO payment_trace_events(order_id,phase,state,code,round)
+ SELECT $1,'queue','waiting','waiting_proxy',COALESCE((SELECT network_restarts+1 FROM payment_runs WHERE order_id=$1),1)
+ WHERE EXISTS(SELECT 1 FROM jobs WHERE id=$2 AND error_code<>'waiting_proxy')`, j.OrderID, j.ID); e != nil {
+				return nil, e
+			}
 			if _, e = tx.Exec(ctx, "UPDATE jobs SET next_at=now()+($2*interval '1 second'),error_code='waiting_proxy' WHERE id=$1", j.ID, num(cfg, "retry_delay_seconds", 30)); e != nil {
 				return nil, e
 			}
 			return nil, tx.Commit(ctx)
 		}
 		if err != nil {
+			var failure checkoutError
+			if errors.As(err, &failure) {
+				if restarted, restartErr := a.restartCheckoutNetworkTx(ctx, tx, j.OrderID, failure.Code); restartErr != nil {
+					return nil, restartErr
+				} else if restarted {
+					return nil, tx.Commit(ctx)
+				}
+				if e = paymentTraceTx(ctx, tx, j.OrderID, "proxy", "failed", failure.Code); e != nil {
+					return nil, e
+				}
+				if _, e = tx.Exec(ctx, "UPDATE jobs SET state='failed',error_code=$2,updated_at=now() WHERE id=$1", j.ID, failure.Code); e != nil {
+					return nil, e
+				}
+				if _, e = tx.Exec(ctx, "UPDATE orders SET status='failed',updated_at=now() WHERE id=$1", j.OrderID); e != nil {
+					return nil, e
+				}
+				if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET credentials_enc='' WHERE order_id=$1", j.OrderID); e != nil {
+					return nil, e
+				}
+				if _, e = tx.Exec(ctx, "INSERT INTO order_events(order_id,stage,message) VALUES($1,'failed','本次办理网络会话已失效，未继续付款，请重新申请。')", j.OrderID); e != nil {
+					return nil, e
+				}
+				return nil, tx.Commit(ctx)
+			}
 			return nil, err
 		}
 		if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET resource_id=$2,proxy_lease_id=$3 WHERE order_id=$1", j.OrderID, p.ID, p.Lease); e != nil {
@@ -144,6 +173,9 @@ func (a *App) claim(ctx context.Context, kind string) (*Job, error) {
 	}
 	if e = tx.Commit(ctx); e != nil {
 		return nil, e
+	}
+	if j.Kind == "checkout" {
+		a.paymentTrace(ctx, j.OrderID, "proxy", "completed", "", 0)
 	}
 	return j, nil
 }

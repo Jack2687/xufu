@@ -53,6 +53,6 @@ docker compose -p xufu up -d --no-deps --no-build --force-recreate app
 ## 运行与网络
 
 - Node/Playwright/Chromium 随应用镜像安装，应用以 UID 10001 运行；共享内存 1GiB，init 回收浏览器子进程，日志滚动保留。
-- 提链走后台订阅地区代理，关闭自动续费及前后查询走后台全局代理，付款运行时走服务器默认网络。数据库中的原地区/全局代理配置按原值迁移。
+- 提链走后台订阅地区代理，关闭自动续费及前后查询走后台全局代理，付款运行时复用本订单提链时保存的固定代理会话。数据库中的原地区/全局代理配置按原值迁移。
 - `.env`、本机业务数据、迁移包、HAR 和密钥不进入 GitHub 或镜像。测试不发送真实付款或续费操作。
 - 本机迁移标记 `.local/migrated-to-production.json` 会阻止 `start-local.ps1` 启动旧数据库的工作队列；后续本地开发应使用独立测试数据库。

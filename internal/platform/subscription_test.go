@@ -56,6 +56,9 @@ func completeSubscriptionCheckout(t *testing.T, h *harness, id string) {
 	if e != nil || job == nil || job.OrderID != id {
 		t.Fatal("checkout not claimed", e)
 	}
+	if e = h.a.recordOrderProxyIP(context.Background(), job, "203.0.113.2"); e != nil {
+		t.Fatal(e)
+	}
 	if e = h.a.finishCheckout(context.Background(), job, checkoutOutput{URL: "https://pay.openai.com/c/pay/cs_test_SubscriptionPrivate"}, nil); e != nil {
 		t.Fatal(e)
 	}

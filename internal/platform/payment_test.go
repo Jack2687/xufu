@@ -40,6 +40,7 @@ func paymentFixture(t *testing.T) (*harness, string, *fakePayment) {
 		{"INSERT INTO resources(id,name,country,endpoint_enc,capacity) VALUES('payment_proxy','Test','PH',$1,2)", []any{proxy}},
 		{"INSERT INTO orders(id,user_id,product_id,product_name,email,country,status,fee,idempotency_key,request_hash) VALUES($1,$2,'pro','Pro','payer@example.com','PH','awaiting_payment',100,'test','test')", []any{id, h.memberID}},
 		{"INSERT INTO checkout_runs(order_id,credentials_expires_at,hosted_url_enc,link_expires_at) VALUES($1,now()+interval '1 hour',$2,now()+interval '30 minutes')", []any{id, link}},
+		{"INSERT INTO order_proxy_sessions(order_id,resource_id,endpoint_enc,expected_ip,expires_at) VALUES($1,'payment_proxy',$2,'203.0.113.2',now()+interval '1 hour')", []any{id, proxy}},
 	} {
 		if _, e := h.a.DB.Exec(ctx, q.s, q.args...); e != nil {
 			t.Fatal(e)
@@ -47,6 +48,9 @@ func paymentFixture(t *testing.T) (*harness, string, *fakePayment) {
 	}
 	p := &fakePayment{events: make(chan paymentEvent, 16)}
 	h.a.paymentStart = func(_ context.Context, in paymentInput) (paymentProcess, error) {
+		if in.Proxy == nil || in.ExpectedIP != "203.0.113.2" {
+			t.Error("original order proxy not provided")
+		}
 		if in.Mode == "prepare" && (in.Card.CVC != "123" || !validBilling(in.Billing) || in.Billing["source"] != "saved") {
 			t.Error("private runtime input missing")
 		}
@@ -228,19 +232,22 @@ func TestPaymentReadOnlyRecoveryAndLeaseFencing(t *testing.T) {
 		t.Fatal("stale attempt accepted")
 	}
 }
-func TestPaymentUsesMachineNetworkWithoutProxyResources(t *testing.T) {
-	h, id, p := paymentFixture(t)
+func TestPaymentNeverFallsBackWithoutOrderProxy(t *testing.T) {
+	h, id, _ := paymentFixture(t)
+	h.a.paymentStart = func(context.Context, paymentInput) (paymentProcess, error) {
+		t.Error("runtime started without original proxy")
+		return nil, errors.New("blocked")
+	}
 	if _, e := h.a.DB.Exec(context.Background(), "DELETE FROM resources"); e != nil {
 		t.Fatal(e)
 	}
 	expect(t, h.request("POST", "/api/orders/"+id+"/payment/prepare", paymentPrepareBody(), h.member, nil), 202)
-	p.events <- paymentEvent{Type: "result", State: "failed", Code: "preparation_failed"}
 	waitPayment(t, h, id, "failed")
 	paymentBalances(t, h, 10000, 0)
 	var leases int
 	h.a.DB.QueryRow(context.Background(), "SELECT count(*) FROM proxy_leases").Scan(&leases)
 	if leases != 0 {
-		t.Fatal("payment occupied checkout proxy capacity")
+		t.Fatal("failed payment leaked proxy capacity")
 	}
 }
 

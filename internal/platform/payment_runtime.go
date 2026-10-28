@@ -20,17 +20,20 @@ type cardInput struct {
 	CVC    string `json:"cvc"`
 }
 type paymentInput struct {
-	Mode           string    `json:"mode"`
-	URL            string    `json:"url"`
-	Email          string    `json:"email"`
-	Card           cardInput `json:"card"`
-	Billing        M         `json:"billing"`
-	PrepareSeconds int       `json:"prepare_seconds"`
-	QuoteSeconds   int       `json:"quote_seconds"`
-	ResultSeconds  int       `json:"result_seconds"`
-	AutoConfirm    bool      `json:"-"`
-	MaxAmount      int64     `json:"-"`
-	Currency       string    `json:"-"`
+	Proxy          *browserProxyInput `json:"proxy"`
+	ExpectedIP     string             `json:"expected_ip"`
+	ProxyExpiresAt int64              `json:"proxy_expires_at"`
+	Mode           string             `json:"mode"`
+	URL            string             `json:"url"`
+	Email          string             `json:"email"`
+	Card           cardInput          `json:"card"`
+	Billing        M                  `json:"billing"`
+	PrepareSeconds int                `json:"prepare_seconds"`
+	QuoteSeconds   int                `json:"quote_seconds"`
+	ResultSeconds  int                `json:"result_seconds"`
+	AutoConfirm    bool               `json:"-"`
+	MaxAmount      int64              `json:"-"`
+	Currency       string             `json:"-"`
 }
 type paymentEvent struct {
 	Type     string `json:"type"`

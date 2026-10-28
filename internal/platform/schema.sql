@@ -131,3 +131,18 @@ CREATE TABLE IF NOT EXISTS order_billing (
  order_id text PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
  details_enc text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Private order-level proxy snapshot; never projected in customer/admin APIs.
+CREATE TABLE IF NOT EXISTS order_proxy_sessions (
+ order_id text PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+ resource_id text REFERENCES resources(id) ON DELETE SET NULL,
+ endpoint_enc text NOT NULL, expected_ip text NOT NULL DEFAULT '',
+ expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE payment_runs ADD COLUMN IF NOT EXISTS network_restarts int NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS payment_trace_events (
+ id bigserial PRIMARY KEY,order_id text NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+ phase text NOT NULL,state text NOT NULL,code text NOT NULL DEFAULT '',round int NOT NULL,
+ elapsed_ms bigint NOT NULL DEFAULT 0,created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS payment_trace_order ON payment_trace_events(order_id,id);

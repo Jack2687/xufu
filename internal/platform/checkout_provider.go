@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,8 +20,9 @@ const iosCheckoutUA = "ChatGPT/1.2026.196 (iOS 18.5; iPhone17,2; build 268219162
 const webCheckoutUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 
 type checkoutInput struct {
-	AccessToken                       string `json:"access_token"`
-	AccountID                         string `json:"account_id"`
+	ObserveIP                         func(string) error `json:"-"`
+	AccessToken                       string             `json:"access_token"`
+	AccountID                         string             `json:"account_id"`
 	Product, Country, Mode, Workspace string
 	Seats, PremiumSeats               int
 }
@@ -144,6 +146,15 @@ func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, bef
 	}
 	if strings.ToUpper(str(ip, "country")) != in.Country {
 		return out, checkoutFailure("proxy_country_mismatch", true, false)
+	}
+	if in.ObserveIP != nil {
+		parsed := net.ParseIP(str(ip, "ip"))
+		if parsed == nil {
+			return out, checkoutFailure("proxy_unavailable", true, false)
+		}
+		if e = in.ObserveIP(parsed.String()); e != nil {
+			return out, e
+		}
 	}
 	headers := http.Header{"Authorization": {"Bearer " + in.AccessToken}, "Accept": {"application/json"}, "Content-Type": {"application/json"}}
 	if in.Mode == "long" {

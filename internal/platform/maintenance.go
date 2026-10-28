@@ -20,7 +20,9 @@ func (a *App) Maintain(ctx context.Context) error {
 			return e
 		}
 	}
-	if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET credentials_enc='' WHERE credentials_expires_at<now() OR order_id IN (SELECT order_id FROM jobs WHERE state IN ('failed','review','completed'))"); e != nil {
+	if _, e = tx.Exec(ctx, `UPDATE checkout_runs c SET credentials_enc='' WHERE c.credentials_expires_at<now() OR
+ (c.order_id IN (SELECT order_id FROM jobs WHERE state IN ('failed','review','completed')) AND NOT EXISTS
+ (SELECT 1 FROM orders o JOIN payment_runs p ON p.order_id=o.id WHERE o.id=c.order_id AND o.workflow='subscription' AND p.state IN ('preparing','quoted','submitting','checking')))`); e != nil {
 		return e
 	}
 	if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET hosted_url_enc='' WHERE link_expires_at<now()"); e != nil {
@@ -33,6 +35,9 @@ func (a *App) Maintain(ctx context.Context) error {
 		return e
 	}
 	if _, e = tx.Exec(ctx, "DELETE FROM proxy_leases WHERE expires_at<now()-interval '1 hour'"); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(ctx, "UPDATE order_proxy_sessions SET endpoint_enc='' WHERE expires_at<now()"); e != nil {
 		return e
 	}
 	_, e = tx.Exec(ctx, "DELETE FROM risk_events WHERE id IN (SELECT id FROM risk_events WHERE created_at<now()-($1*interval '1 day') ORDER BY id LIMIT 10000)", days)

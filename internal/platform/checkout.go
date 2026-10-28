@@ -71,6 +71,12 @@ func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw jso
 	if _, e = tx.Exec(ctx, "UPDATE orders SET status='queued',updated_at=now() WHERE id=$1", id); e != nil {
 		return e
 	}
+	if e = paymentTraceTx(ctx, tx, id, "accepted", "completed", ""); e != nil {
+		return e
+	}
+	if e = paymentTraceTx(ctx, tx, id, "queue", "waiting", ""); e != nil {
+		return e
+	}
 	_, e = tx.Exec(ctx, "INSERT INTO order_events(order_id,stage,message) VALUES($1,'queued','已排队准备结账链接，等待可用代理；本阶段不扣费、不提交银行卡付款。')", id)
 	return e
 }
@@ -127,6 +133,9 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 		return e
 	}
 	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(1886002)"); e != nil {
+		return e
+	}
 	var attempts, max int
 	if e = tx.QueryRow(ctx, "SELECT attempts,max_attempts FROM jobs WHERE id=$1 AND lease_token=$2 AND state='running' AND lease_until>now() FOR UPDATE", j.ID, j.Lease).Scan(&attempts, &max); e != nil {
 		if e == pgx.ErrNoRows {
@@ -143,6 +152,14 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 	}
 	delay := num(cfg, "retry_delay_seconds", 30)
 	if cause != nil {
+		var networkFailure checkoutError
+		if errors.As(cause, &networkFailure) && !networkFailure.Unknown {
+			if restarted, err := a.restartCheckoutNetworkTx(ctx, tx, j.OrderID, networkFailure.Code); err != nil {
+				return err
+			} else if restarted {
+				return tx.Commit(ctx)
+			}
+		}
 		state, status, code = "failed", "failed", "preparation_failed"
 		msg = "结账准备未完成，请核对信息后重新创建申请。"
 		var p checkoutError
@@ -153,6 +170,8 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 				msg = "账号授权已失效，请重新获取 Session。"
 			case "proxy_country_mismatch":
 				msg = "代理出口与所选订阅地区不符，等待重新检查。"
+			case "proxy_session_changed", "proxy_session_expired":
+				msg = "本次办理网络会话已变化或失效，已停止继续提交。"
 			case "access_denied":
 				msg = "上游拒绝了请求，需要人工核对账号或网络。"
 			case "network", "upstream_unavailable", "upstream_busy":
@@ -175,7 +194,7 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 		if err != nil {
 			return err
 		}
-		if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET hosted_url_enc=$2,link_expires_at=now()+interval '30 minutes',credentials_enc='' WHERE order_id=$1", j.OrderID, encrypted); e != nil {
+		if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET hosted_url_enc=$2,link_expires_at=now()+interval '30 minutes',credentials_enc=CASE WHEN $3 THEN credentials_enc ELSE '' END WHERE order_id=$1", j.OrderID, encrypted, workflow == "subscription" && paymentState == "preparing"); e != nil {
 			return e
 		}
 	} else if state != "queued" {
@@ -204,24 +223,45 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 	if _, e = tx.Exec(ctx, "INSERT INTO order_events(order_id,stage,message) VALUES($1,$2,$3)", j.OrderID, status, msg); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, "DELETE FROM proxy_leases WHERE id=(SELECT proxy_lease_id FROM checkout_runs WHERE order_id=$1)", j.OrderID); e != nil {
+	if cause == nil && workflow == "subscription" && paymentState == "preparing" {
+		_, e = tx.Exec(ctx, "UPDATE proxy_leases SET expires_at=(SELECT expires_at+interval '15 seconds' FROM payment_runs WHERE order_id=$1) WHERE id=(SELECT proxy_lease_id FROM checkout_runs WHERE order_id=$1)", j.OrderID)
+	} else {
+		_, e = tx.Exec(ctx, "DELETE FROM proxy_leases WHERE id=(SELECT proxy_lease_id FROM checkout_runs WHERE order_id=$1)", j.OrderID)
+	}
+	if e != nil {
 		return e
+	}
+	if state == "queued" {
+		if e = paymentTraceTx(ctx, tx, j.OrderID, "queue", "waiting", "retry"); e != nil {
+			return e
+		}
 	}
 	return tx.Commit(ctx)
 }
 
 func (a *App) executeCheckout(ctx context.Context, j *Job) {
+	started := time.Now()
+	a.paymentTrace(ctx, j.OrderID, "checkout", "running", "", 0)
 	var enc, proxyEnc string
-	var expiry time.Time
+	var expiry, proxyExpiry time.Time
 	in := checkoutInput{}
-	e := a.DB.QueryRow(ctx, `SELECT c.credentials_enc,c.credentials_expires_at,c.workspace_name,c.premium_seats,o.product_id,o.country,o.seats,r.endpoint_enc FROM checkout_runs c JOIN orders o ON o.id=c.order_id JOIN resources r ON r.id=c.resource_id WHERE c.order_id=$1`, j.OrderID).Scan(&enc, &expiry, &in.Workspace, &in.PremiumSeats, &in.Product, &in.Country, &in.Seats, &proxyEnc)
-	failJob := func(err error) { a.finishCheckout(ctx, j, checkoutOutput{}, err) }
+	e := a.DB.QueryRow(ctx, `SELECT c.credentials_enc,c.credentials_expires_at,c.workspace_name,c.premium_seats,o.product_id,o.country,o.seats,s.endpoint_enc,s.expires_at FROM checkout_runs c JOIN orders o ON o.id=c.order_id JOIN order_proxy_sessions s ON s.order_id=o.id WHERE c.order_id=$1`, j.OrderID).Scan(&enc, &expiry, &in.Workspace, &in.PremiumSeats, &in.Product, &in.Country, &in.Seats, &proxyEnc, &proxyExpiry)
+	failJob := func(err error) {
+		var failure checkoutError
+		errors.As(err, &failure)
+		a.paymentTrace(ctx, j.OrderID, "checkout", "failed", failure.Code, time.Since(started))
+		a.finishCheckout(ctx, j, checkoutOutput{}, err)
+	}
 	if e != nil {
 		failJob(checkoutFailure("preparation_failed", false, false))
 		return
 	}
 	if !expiry.After(time.Now()) {
 		failJob(checkoutFailure("invalid_session", false, false))
+		return
+	}
+	if !proxyExpiry.After(time.Now()) {
+		failJob(checkoutFailure("proxy_session_expired", false, false))
 		return
 	}
 	raw, e := a.decrypt(enc)
@@ -235,6 +275,13 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 		return
 	}
 	in.AccessToken, in.AccountID = credentials.AccessToken, credentials.AccountID
+	in.ObserveIP = func(ip string) error {
+		err := a.recordOrderProxyIP(ctx, j, ip)
+		if err == nil {
+			a.paymentTrace(ctx, j.OrderID, "network", "completed", "", 0)
+		}
+		return err
+	}
 	cfg := a.config(ctx, "scheduler")
 	in.Mode = str(cfg, "link_mode")
 	if in.Mode == "" {
@@ -280,6 +327,18 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 	final, c := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer c()
 	a.finishCheckout(final, j, result, cause)
+	traceState, code := "completed", ""
+	if cause != nil {
+		traceState = "failed"
+		var failure checkoutError
+		if errors.As(cause, &failure) {
+			code = failure.Code
+		}
+		if failure.Unknown {
+			traceState = "review"
+		}
+	}
+	a.paymentTrace(final, j.OrderID, "checkout", traceState, code, time.Since(started))
 }
 
 func (a *App) RunCheckout(ctx context.Context) {

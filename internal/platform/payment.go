@@ -23,7 +23,14 @@ var paymentMessages = map[string]string{
 	"payment_limit_exceeded":          "付款报价金额或币种异常，未提交付款，服务费已解冻。",
 	"subscription_preparation_failed": "订阅准备未完成或等待超时，未提交付款，服务费已解冻。",
 	"payment_declined":                "付款方式被明确拒绝，本次服务费已解冻，请核对银行卡后重新准备。",
-	"network_connection_failed":       "运行机器的网络无法连接支付服务，未提交付款，请联系运营检查网络。",
+	"network_connection_failed":       "本次办理网络无法连接支付服务，未提交付款，请联系运营检查。",
+	"proxy_session_unavailable":       "本次办理网络会话不可用，未继续提交付款，请联系运营核实。",
+	"proxy_session_changed":           "本次办理网络出口发生变化，未继续提交付款，请联系运营核实。",
+	"proxy_session_expired":           "本次办理网络会话已到期，未继续提交付款。",
+	"network_restarted":               "本轮未提交扣款，正在重新准备办理网络和结账信息。",
+	"network_check":                   "正在核对本次办理网络。",
+	"network_verified":                "本次办理网络已核对一致。",
+	"result_check":                    "正在核实付款结果。",
 	"opening":                         "正在连接付款页面。", "billing": "正在准备账单资料。", "pricing": "正在核对最终金额与税费。", "confirming": "已收到金额确认，正在提交付款。",
 	"quoted": "报价已就绪，请核对含税金额后确认付款。", "succeeded": "上游已确认付款成功，服务费已结算。", "preparation_failed": "付款准备未完成，请检查网络或付款资料后重新准备。",
 	"quote_unavailable": "尚未取得有效的含税报价，未提交付款。", "amount_changed": "应付金额已变化，本次未提交付款，请重新准备报价。",
@@ -167,7 +174,10 @@ func paymentFunds(ctx context.Context, tx pgx.Tx, id, attempt, action string) er
 		return e
 	}
 	_, e := tx.Exec(ctx, "UPDATE users SET balance=$2,frozen=$3,updated_at=now() WHERE id=$1", userID, balance, frozen)
-	return e
+	if e != nil {
+		return e
+	}
+	return paymentTraceTx(ctx, tx, id, "funds", "completed", action)
 }
 func (a *App) paymentAdmission(ctx context.Context, tx pgx.Tx, userID string, cfg M) error {
 	if _, e := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(1886002)"); e != nil {
@@ -305,6 +315,20 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 	a.paymentMu.Unlock()
 	go func() {
 		defer cancel()
+		observedSubmission := false
+		retryCard, retryBilling := in.Card, in.Billing
+		defer func() { retryCard = cardInput{}; retryBilling = nil }()
+		restart := func(event paymentEvent) bool {
+			if observedSubmission || !in.AutoConfirm || retryCard.Number == "" {
+				return false
+			}
+			ok, err := a.restartPaymentNetwork(ctx, id, attempt, event)
+			if err != nil || !ok {
+				return false
+			}
+			a.launchSubscription(id, attempt, retryCard, retryBilling)
+			return true
+		}
 		defer func() {
 			a.paymentMu.Lock()
 			if a.payments[id] == s {
@@ -316,6 +340,27 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 		if start == nil {
 			start = startPaymentNode
 		}
+		proxy, expectedIP, proxyExpires, proxyErr := a.paymentOrderProxy(ctx, id, attempt, ttl)
+		if proxyErr != nil {
+			event := paymentEvent{Type: "result", State: "failed", Code: proxyPaymentCode(proxyErr)}
+			if restart(event) {
+				return
+			}
+			a.finishPayment(ctx, id, attempt, event)
+			return
+		}
+		defer a.releaseProxy(context.WithoutCancel(ctx), proxy.Lease)
+		bridge, closeBridge, proxyErr := openBrowserProxy(ctx, proxy.Endpoint)
+		if proxyErr != nil {
+			event := paymentEvent{Type: "result", State: "failed", Code: "proxy_session_unavailable"}
+			if restart(event) {
+				return
+			}
+			a.finishPayment(ctx, id, attempt, event)
+			return
+		}
+		defer closeBridge()
+		in.Proxy, in.ExpectedIP, in.ProxyExpiresAt = bridge, expectedIP, proxyExpires.UnixMilli()
 		proc, e := start(ctx, in)
 		in.Card = cardInput{}
 		in.Billing = nil
@@ -329,6 +374,15 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 			return
 		}
 		defer proc.Close()
+		phase := ""
+		phaseAt := time.Now()
+		closePhase := func(state, code string) {
+			if phase != "" {
+				a.paymentTrace(ctx, id, phase, state, code, time.Since(phaseAt))
+				phase = ""
+			}
+		}
+		defer func() { closePhase("review", "result_unconfirmed") }()
 		phaseTimer := time.NewTimer(time.Duration(in.PrepareSeconds) * time.Second)
 		defer phaseTimer.Stop()
 		for {
@@ -352,10 +406,22 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 				}
 				switch event.Type {
 				case "stage":
+					if event.Code == "network_verified" {
+						closePhase("completed", "")
+					} else {
+						p := map[string]string{"opening": "opening", "billing": "billing", "pricing": "pricing", "confirming": "confirming", "network_check": "network", "result_check": "checking"}[event.Code]
+						if p != "" {
+							closePhase("completed", "")
+							phase = p
+							phaseAt = time.Now()
+							a.paymentTrace(ctx, id, p, "running", "", 0)
+						}
+					}
 					if _, exists := paymentMessages[event.Code]; exists {
 						a.DB.Exec(ctx, "INSERT INTO order_events(order_id,stage,message) SELECT $1,'payment_progress',$3 WHERE EXISTS(SELECT 1 FROM payment_runs WHERE order_id=$1 AND attempt_id=$2 AND state IN ('preparing','submitting','checking'))", id, attempt, paymentMessages[event.Code])
 					}
 				case "quote":
+					closePhase("completed", "")
 					if e = a.savePaymentQuote(ctx, id, attempt, event, in.QuoteSeconds); e != nil {
 						fallback()
 						return
@@ -373,7 +439,24 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 					} else {
 						phaseTimer.Reset(time.Duration(in.QuoteSeconds+2) * time.Second)
 					}
+				case "submitted":
+					observedSubmission = true
+					a.paymentTrace(ctx, id, "submitted", "completed", "", 0)
 				case "result":
+					if observedSubmission {
+						event.Sent = true
+					}
+					traceState := "completed"
+					if event.State == "failed" || event.State == "declined" {
+						traceState = "failed"
+					} else if event.State != "succeeded" {
+						traceState = "review"
+					}
+					closePhase(traceState, event.Code)
+					proc.Close()
+					if restart(event) {
+						return
+					}
 					if e = a.finishPayment(ctx, id, attempt, event); e != nil {
 						fallback()
 					}
@@ -558,6 +641,11 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 		return e
 	}
 	if workflow == "subscription" {
+		if target == "succeeded" || target == "failed" || target == "cancelled" {
+			if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET credentials_enc='' WHERE order_id=$1", id); e != nil {
+				return e
+			}
+		}
 		if target == "succeeded" && !keep {
 			orderState = "processing"
 			if _, e = tx.Exec(ctx, "UPDATE subscription_runs SET renewal_state='pending',next_at=now(),updated_at=now() WHERE order_id=$1 AND renewal_state='not_started'", id); e != nil {
@@ -582,6 +670,25 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 	}
 	if e != nil {
 		return e
+	}
+	traceState := "review"
+	if target == "succeeded" {
+		traceState = "completed"
+	} else if target == "failed" || target == "cancelled" {
+		traceState = "failed"
+	}
+	if e = paymentTraceTx(ctx, tx, id, "result", traceState, code); e != nil {
+		return e
+	}
+	if workflow == "subscription" && target == "succeeded" && keep {
+		if e = paymentTraceTx(ctx, tx, id, "renewal", "completed", "kept"); e != nil {
+			return e
+		}
+	}
+	if workflow == "subscription" && (orderState == "succeeded" || orderState == "failed" || orderState == "cancelled") {
+		if e = paymentTraceTx(ctx, tx, id, "complete", traceState, code); e != nil {
+			return e
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -621,7 +728,7 @@ func (a *App) checkPayment(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "当前状态无需核实")
 		return
 	}
-	// Read-only verification uses the machine network, never the checkout proxy pool.
+	// Read-only verification must reuse the original order's proxy session too.
 	raw, e := a.decrypt(enc)
 	if e != nil {
 		paymentError(w, e)

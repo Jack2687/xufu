@@ -34,7 +34,7 @@ func validateConfig(key string, v M) error {
 		"scheduler": {"paused", "max_parallel", "per_user_parallel", "retry_limit", "retry_delay_seconds", "task_timeout_seconds", "queue_limit", "default_country", "link_mode", "engine"},
 		"billing":   {"country", "allow_customer_edit", "address_templates"}, "tiers": {"items"},
 		"proxy":   {"default_id", "global_id", "match_country", "request_timeout_seconds"},
-		"payment": {"enabled", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit"},
+		"payment": {"enabled", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit", "network_restart_limit"},
 	}
 	keys, ok := allowed[key]
 	if !ok {
@@ -54,7 +54,7 @@ func validateConfig(key string, v M) error {
 	}
 	for _, k := range keys {
 		if _, ok := v[k]; !ok {
-			if key == "proxy" && k == "global_id" {
+			if (key == "proxy" && k == "global_id") || (key == "payment" && k == "network_restart_limit") {
 				continue
 			}
 			return bad("缺少配置字段：" + k)
@@ -85,7 +85,12 @@ func validateConfig(key string, v M) error {
 		if e := boolean("enabled"); e != nil {
 			return e
 		}
-		for k, b := range map[string][2]int{"max_parallel": {1, 20}, "per_user_parallel": {1, 5}, "prepare_timeout_seconds": {30, 300}, "quote_timeout_seconds": {30, 600}, "result_timeout_seconds": {30, 600}, "requests_per_minute": {1, 20}, "subscription_wait_seconds": {30, 1800}, "renewal_check_interval_seconds": {5, 300}, "renewal_check_limit": {1, 60}} {
+		for k, b := range map[string][2]int{"max_parallel": {1, 20}, "per_user_parallel": {1, 5}, "prepare_timeout_seconds": {30, 300}, "quote_timeout_seconds": {30, 600}, "result_timeout_seconds": {30, 600}, "requests_per_minute": {1, 20}, "subscription_wait_seconds": {30, 1800}, "renewal_check_interval_seconds": {5, 300}, "renewal_check_limit": {1, 60}, "network_restart_limit": {0, 5}} {
+			if k == "network_restart_limit" {
+				if _, exists := v[k]; !exists {
+					continue
+				}
+			}
 			if e := number(k, b[0], b[1]); e != nil {
 				return e
 			}
@@ -262,6 +267,16 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _ := json.Marshal(v)
 	a.transaction(w, r, func(tx pgx.Tx) (any, error) {
+		if key == "payment" {
+			if _, present := v["network_restart_limit"]; !present {
+				var previous M
+				if e := tx.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='payment' FOR UPDATE").Scan(&previous); e != nil {
+					return nil, e
+				}
+				v["network_restart_limit"] = num(previous, "network_restart_limit", 2)
+				b, _ = json.Marshal(v)
+			}
+		}
 		if key == "proxy" {
 			if _, e := tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(1886003)"); e != nil {
 				return nil, e
