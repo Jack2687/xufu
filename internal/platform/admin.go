@@ -226,7 +226,12 @@ func (a *App) adminOrderDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events, _ := a.query(r.Context(), "SELECT stage,message,created_at FROM order_events WHERE order_id=$1 ORDER BY id", r.PathValue("id"))
-	out(w, 200, M{"order": orders[0], "events": events, "trace": a.paymentTraceDetails(r.Context(), r.PathValue("id")), "checkout": a.checkoutDetails(r.Context(), r.PathValue("id")), "payment": a.paymentDetails(r.Context(), r.PathValue("id"))})
+	links, e := a.adminCheckoutLinks(r.Context(), r.PathValue("id"))
+	if e != nil {
+		fail(w, 503, "结账链接记录暂时无法读取，请稍后刷新")
+		return
+	}
+	out(w, 200, M{"order": orders[0], "events": events, "trace": a.paymentTraceDetails(r.Context(), r.PathValue("id")), "checkout_links": links, "checkout": a.checkoutDetails(r.Context(), r.PathValue("id")), "payment": a.paymentDetails(r.Context(), r.PathValue("id"))})
 }
 func (a *App) adminOrderNote(w http.ResponseWriter, r *http.Request) {
 	var v struct {

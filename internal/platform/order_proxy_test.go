@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +127,7 @@ func TestNetworkRebuildReusesFrozenFeeAndStopsAfterLimit(t *testing.T) {
 		if e = h.a.recordOrderProxyIP(ctx, j, "203.0.113.2"); e != nil {
 			t.Fatal(e)
 		}
-		if e = h.a.finishCheckout(ctx, j, checkoutOutput{URL: "https://pay.openai.com/c/pay/cs_test_SubscriptionPrivate"}, nil); e != nil {
+		if e = h.a.finishCheckout(ctx, j, checkoutOutput{URL: "https://pay.openai.com/c/pay/cs_test_SubscriptionPrivate" + strconv.Itoa(round+1)}, nil); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -142,6 +143,20 @@ func TestNetworkRebuildReusesFrozenFeeAndStopsAfterLimit(t *testing.T) {
 	}
 	assertSubscriptionPrivate(t, h, id)
 	admin := expect(t, h.request("GET", "/api/admin/orders/"+id, nil, h.admin, nil), 200)
+	links := admin["checkout_links"].([]any)
+	if len(links) != 3 {
+		t.Fatal("network rebuild discarded checkout history")
+	}
+	for i, item := range links {
+		link := item.(map[string]any)
+		want := "https://pay.openai.com/c/pay/cs_test_SubscriptionPrivate"
+		if i > 0 {
+			want += strconv.Itoa(i + 1)
+		}
+		if link["round"] != float64(i+1) || link["url"] != want {
+			t.Fatal("history assigned to wrong round")
+		}
+	}
 	if len(admin["trace"].([]any)) < 3 {
 		t.Fatal("missing persistent administrator trace")
 	}

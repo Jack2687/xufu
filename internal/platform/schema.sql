@@ -146,3 +146,20 @@ CREATE TABLE IF NOT EXISTS payment_trace_events (
  elapsed_ms bigint NOT NULL DEFAULT 0,created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS payment_trace_order ON payment_trace_events(order_id,id);
+
+-- Checkout history is encrypted and only projected to administrator order details.
+CREATE TABLE IF NOT EXISTS order_checkout_links (
+ order_id text NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+ round int NOT NULL CHECK(round>0),url_enc text NOT NULL,
+ generated_at timestamptz,expires_at timestamptz,
+ recorded_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(order_id,round)
+);
+-- Preserve only links that still exist. Do not invent generation times for
+-- legacy orders or restore credentials that were already cleared.
+INSERT INTO order_checkout_links(order_id,round,url_enc,expires_at)
+ SELECT c.order_id,COALESCE(p.network_restarts,0)+1,
+ COALESCE(NULLIF(c.hosted_url_enc,''),NULLIF(p.hosted_url_enc,'')),c.link_expires_at
+ FROM checkout_runs c LEFT JOIN payment_runs p ON p.order_id=c.order_id
+ WHERE COALESCE(NULLIF(c.hosted_url_enc,''),NULLIF(p.hosted_url_enc,'')) IS NOT NULL
+ ON CONFLICT(order_id,round) DO NOTHING;

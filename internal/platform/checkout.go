@@ -197,6 +197,12 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 		if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET hosted_url_enc=$2,link_expires_at=now()+interval '30 minutes',credentials_enc=CASE WHEN $3 THEN credentials_enc ELSE '' END WHERE order_id=$1", j.OrderID, encrypted, workflow == "subscription" && paymentState == "preparing"); e != nil {
 			return e
 		}
+		if _, e = tx.Exec(ctx, `INSERT INTO order_checkout_links(order_id,round,url_enc,generated_at,expires_at)
+ SELECT c.order_id,COALESCE(p.network_restarts,0)+1,$2,now(),c.link_expires_at
+ FROM checkout_runs c LEFT JOIN payment_runs p ON p.order_id=c.order_id WHERE c.order_id=$1
+ ON CONFLICT(order_id,round) DO NOTHING`, j.OrderID, encrypted); e != nil {
+			return e
+		}
 	} else if state != "queued" {
 		if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET credentials_enc='' WHERE order_id=$1", j.OrderID); e != nil {
 			return e
