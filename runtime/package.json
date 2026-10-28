@@ -1,0 +1,7 @@
+{
+  "name": "xupay-payment-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test payment-browser.test.mjs"},
+  "dependencies": {"playwright": "1.64.1"}
+}

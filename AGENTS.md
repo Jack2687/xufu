@@ -1,0 +1,29 @@
+# 序付 · XUPAY
+
+- 正式部署目标：GitHub yigerende/xufu，目录 /opt/1panel/apps/xufu，Compose 项目 xufu，容器 xufu-app / xufu-postgres，对外端口5496（6948被其他项目使用，不可占用）。先读 docs/deployment.md 及工作区 _codex-memory/xupay-production-runbook.md。
+- 只在首次部署迁移本机数据和配置。后续保留正式 .env / MASTER_KEY / 数据库 / 卷，先构建、检查无活动业务、备份，再仅重建 app；不得影响其他容器或重放导入。本机迁移后禁止启动旧副本的队列。
+
+- 技术栈：Vue 3 / TypeScript / Vite / Tailwind；Go net/http；PostgreSQL / pgx。
+- 本地应用 18860，独立 PostgreSQL 18862。只操作此项目，不能启动或修改 Space/HUIXU 队列。
+- 当前包含后台代理提链（默认长链）和服务端临时浏览器付款：填卡、后台 US 账单、实时含税报价、客户确认、单次提交及只读结果核实。提链使用按订阅地区配置的代理；付款初始化/报价/付款结果使用运行机器默认网络。所有关闭自动续费及前后查询必须使用后台明确选择的全局代理，禁止直连或回退地区池。不能把草稿、提链、人工备注、通知轮询或成功页跳转冒充付款成功。
+- 付款卡号/CVV 只在当前内存与私有进程管道处理，不写数据库、日志或浏览器存储。付款前冻结服务费，权威付款结果与账本事务结算；未知结果只核实，不重复扣款。额外验证需客户在官方页面完成；当前未做真实扣款实测，不得宣称已经验证真实付款成功。
+- 所有金额使用整数分；资金调整、兑换和冻结必须事务化、幂等并写账本及审计。
+- 密码 bcrypt；会话/API key 只存哈希；资源凭证 AES-GCM 加密，不回显。
+- .env、.local、日志、数据库、真实代理与访问凭据不得提交。
+- 本地启动：scripts/start-local.ps1；停止：scripts/stop-local.ps1；测试：go test ./... 和 frontend npm run check / build。
+
+- 2026-10-28 最新：订阅办理一次提交自动提链/付款/取消续费，勾选保留则不取消。订阅订单客户与管理员均不返回结账 URL；独立提链工具保留原链接输出。不能让用户额外填写扣款上限或中途重复确认。
+- 账单从后台 enabled=true、test_only=false 且完整的正式资料中均匀随机选择，不再绑定订阅邮箱；用户已确认现有地址为真实资料。不生成姓名/地址或按税率选择地区。缺失资料在提链和冻结前拦截。续费取消最多发一次，未知结果只读核实，不能把取消响应 200 当作已关闭。只有 will_renew=false 且订阅有效才完成。
+
+- 2026-10-28 后续更新：结账链接工具仅提链，新建 workflow=link 订单禁止站内付款准备；生成后四步完成，不占未完成额度。订阅办理采用整行卡片输入，保留独立六步付款流程。
+- 账单后台已改为单条 CRUD 列表，新条目不要求邮箱；test_only/停用条目不进入真实付款。用户已确认导入的 10 条资料是真实资料，本轮按授权改为正式资料；“随机测试”仍只预览测试资料、不发起付款。正式付款选择已启用正式池，order_billing.details_enc 保存每单加密副本；同单重试/幂等回放不换资料，订单页面/API不投影副本。
+
+- 2026-10-28 独立续费已接入：renewal_tasks 独立持久任务，不创建付款订单或账本。使用登录态 /api/renewals，所有投影白名单；原 Session 不保存。与订阅订单共用 admission lock 1886002、续费容量锁 1886004；提交取消前持久写入 cancel_started，重启/待核实重新授权均不能清除此标记。独立任务全局代理、免费，过期/终态清除授权。更新前活动检查必须同时覆盖 renewal_tasks 的 queued/processing/checking 与 lease_token。
+
+- 2026-10-28 全局代理与检测：settings.proxy.global_id 为续费专用全局选择（与 default_id 地区优先代理独立）。两个续费 worker 必须经 openRenewalClient 租用该代理，整轮 GET/POST/GET 固定同一通道；未设置/停用/占满时延时等待、不耗核实次数；网络错误按原限制核实，未知取消不得重发。保留现有数据，不替管理员自动选线。
+- 评分/OpenAI 测试只读、异步，proxy_checks 持久队列全系统最多2个，单代理最多1个，25秒任务/8秒请求/35秒租约，固定HTTPS探测地址；无账号密钥、原始响应或代理凭据回显。评分是连通30/连续连接成功20/延迟20/OpenAI30（v2：动态出口变化不扣分，旧评分提示重测），不是IP风险分。检测重启可恢复，旧租约不得覆盖；更换凭据清空旧结果。发布活动检查包含 proxy_checks queued/running。
+- Windows 本地启动脚本自动读取启用的系统 HTTP 代理，设置进程级 XUPAY_LOCAL_PROXY：本机系统代理 → 后台地区/全局代理 → 上游。只作用于 newPaymentClient 的提链、续费和代理检测，不替换后台代理或改付款浏览器策略；本机代理不可用时不回退直连。正式环境默认未设置，不自动继承 HTTP_PROXY/HTTPS_PROXY；不要把本机回环地址写入正式 Compose。评分错误只投影固定原因/阶段，不回显原始网络错误。
+
+- 2026-10-28 续费失败接续：付款已成功且续费终态 review 的订单 status=succeeded / renewal=review，显示“订阅成功，取消自动续费失败”。独立 /api/renewals 可接续同客户、同空间的失败记录，subscription_runs.account_hash/renewal_task_id 仅私有存储，delegated 不再被原 worker 领取。取消 fence 永不清零，确认关闭后同步原订单；未知付款/活跃任务仍互斥。迁移仅修正 payment_runs 已成功的旧 review 订单，不改账本。
+
+- 2026-10-28 用户移除手动取消付款：PaymentPanel 不显示“取消付款准备”，网页及 /api/v1 的 payment/cancel 路由和实现已删除；普通撤回方案接口在共享 admission 锁与订单行锁下拒绝 subscription 或存在 payment_runs 的订单。未付款方案/提链仍可撤回；自动超时与失败解冻、支付结果核实及取消自动续费保留。OpenAPI为13操作/12路径。

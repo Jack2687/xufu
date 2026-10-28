@@ -1,0 +1,36 @@
+<script setup lang="ts">
+import {computed,onUnmounted,ref} from 'vue'
+import {CreditCard,ShieldCheck,RefreshCw} from 'lucide-vue-next'
+import {api,cash,date,notify,type Row} from '../lib'
+const props=defineProps<{order:Row;payment?:Row;checkout?:Row;admin?:boolean}>()
+const emit=defineEmits<{refresh:[]}>()
+const number=ref(''),month=ref(''),year=ref(''),cvc=ref(''),accepted=ref(false),agreeQuote=ref(false),busy=ref(false),error=ref('')
+const states:Row={preparing:'准备付款',quoted:'等待金额确认',submitting:'正在付款',checking:'核实付款结果',action_required:'需要额外验证',review:'结果待核实',succeeded:'付款成功',failed:'准备未完成',cancelled:'准备已取消'}
+const canPrepare=computed(()=>!props.admin&&props.order.workflow!=='subscription'&&props.payment?.enabled&&props.order.status==='awaiting_payment'&&(!props.payment.state||['failed','cancelled'].includes(props.payment.state)))
+const amount=computed(()=>{const p=props.payment;if(p?.amount==null||!p.currency)return '—';const digits=p.currency==='jpy'?0:2;return new Intl.NumberFormat('zh-CN',{style:'currency',currency:p.currency.toUpperCase(),minimumFractionDigits:digits}).format(Number(p.amount)/(digits?100:1))})
+function clear(){number.value='';month.value='';year.value='';cvc.value='';accepted.value=false}
+onUnmounted(clear)
+async function run(fn:()=>Promise<void>){if(busy.value)return;busy.value=true;error.value='';try{await fn();emit('refresh')}catch(e){error.value=(e as Error).message}finally{busy.value=false}}
+async function prepare(){await run(async()=>{try{await api(`/orders/${props.order.id}/payment/prepare`,'POST',{card:{number:number.value,month:month.value,year:year.value,cvc:cvc.value},accepted:accepted.value});notify('正在准备含税报价，尚未提交扣款')}finally{clear()}})}
+async function confirm(){await run(async()=>{await api(`/orders/${props.order.id}/payment/confirm`,'POST',{attempt_id:props.payment?.attempt_id,amount:props.payment?.amount,currency:props.payment?.currency,accepted:agreeQuote.value});agreeQuote.value=false})}
+async function check(){await run(async()=>{await api(`${props.admin?'/admin':''}/orders/${props.order.id}/payment/check`,'POST',{})})}
+</script>
+<template><section class="payment-panel" v-if="payment?.state||canPrepare">
+<div class="panel-heading"><h3><CreditCard :size="19"/>站内付款</h3><span v-if="payment?.state" class="badge" :class="payment.state">{{states[payment.state]||'处理中'}}</span></div>
+<div class="alert danger" v-if="error" role="alert">{{error}}</div>
+<p v-if="payment?.message" role="status">{{payment.message}}</p>
+<div v-if="payment?.state" class="payment-summary"><span>付款卡尾号 <b>{{payment.last4||'—'}}</b></span><span>含税订阅金额 <b>{{amount}}</b></span><span>服务费 <b>{{cash(order.fee)}} R</b> · {{({held:'已冻结',charged:'已结算',released:'已解冻'} as Row)[payment.fee_state]}}</span></div>
+<form v-if="canPrepare" @submit.prevent="prepare" autocomplete="off">
+<p>填写本人或获授权的真实银行卡。先核对含税报价，再确认付款；服务费 {{cash(order.fee)}} R 将暂时冻结。</p>
+<label>卡号<input v-model="number" inputmode="numeric" autocomplete="off" required maxlength="23" placeholder="银行卡卡号"/></label>
+<div class="form-grid payment-card-fields"><label>有效月<input v-model="month" inputmode="numeric" required pattern="[0-9]{1,2}" maxlength="2" placeholder="MM"/></label><label>有效年<input v-model="year" inputmode="numeric" required pattern="[0-9]{2,4}" maxlength="4" placeholder="YYYY"/></label><label>安全码<input v-model="cvc" type="password" inputmode="numeric" autocomplete="off" required pattern="[0-9]{3,4}" maxlength="4" placeholder="CVV"/></label></div>
+<label class="checkbox-label"><input type="checkbox" v-model="accepted" required/>我有权使用此卡，理解最终订阅金额和服务费分别结算。</label>
+<button class="btn primary" :disabled="busy||!accepted"><ShieldCheck :size="16"/>{{busy?'提交中…':'准备报价'}}</button><small class="muted">卡号和安全码仅用于本次处理，不保存到订单或操作日志。</small>
+</form>
+<div v-if="payment?.state==='quoted'"><p>本次银行卡扣款：<strong>{{amount}}</strong>，另结算服务费 {{cash(order.fee)}} R。报价有效至 {{date(payment.quote_expires_at)}}。</p><template v-if="!admin&&order.workflow!=='subscription'"><label class="checkbox-label"><input type="checkbox" v-model="agreeQuote"/>我确认以上金额，同意提交付款。</label><button class="btn primary" :disabled="busy||!agreeQuote" @click="confirm">确认付款 {{amount}}</button></template></div>
+<div class="actions" v-if="['review','action_required'].includes(payment?.state)"><button class="btn secondary" :disabled="busy" @click="check"><RefreshCw :size="16"/>核实付款结果</button></div>
+<p class="small muted" v-if="order.workflow!=='subscription'&&['submitting','review','checking','action_required'].includes(payment?.state)">处理中请勿在其他页面再次付款。需要额外验证时，请使用上方官方付款页完成；该页面使用你的浏览器网络，完成后点击核实结果。</p>
+<p v-if="order.workflow==='subscription'">续费设置：{{({kept:'已选择保留自动续费',pending:'付款后自动关闭续费',disabled:'已关闭自动续费',review:'取消自动续费失败',retrying:'正在重新处理续费',not_started:'尚未开始'} as Row)[order.renewal]||'等待处理'}}</p><div v-if="order.workflow==='subscription'&&order.renewal==='review'&&payment?.state==='succeeded'" class="callout"><div><b>订阅成功，取消自动续费失败</b><p>付款已确认，无需重新订阅。请前往续费管理，粘贴同一账号的新 Session 继续关闭；本次操作不收费。</p><a href="#/renewal" class="btn secondary" :target="admin?'_blank':undefined" rel="noopener noreferrer">去关闭自动续费</a></div></div><p class="small muted" v-if="order.workflow==='subscription'&&payment?.state==='action_required'">付款需要额外用户验证，流程已暂停，请联系运营核实。</p></section></template>
+<style scoped>
+.payment-panel{border:1px solid #b7d9d1;background:#f4faf8;border-radius:16px;padding:24px;margin:20px 0}.payment-panel h3{display:flex;gap:8px;align-items:center}.payment-summary{display:flex;flex-wrap:wrap;gap:12px 24px;border-top:1px solid #d9e8e3;border-bottom:1px solid #d9e8e3;padding:14px 0;margin:16px 0;font-size:13px}.payment-card-fields{grid-template-columns:repeat(3,1fr)}.payment-panel form>small{display:block;margin-top:12px}.payment-panel .actions{margin-top:16px}
+</style>

@@ -1,0 +1,2655 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "序付 XUPAY 开发者 API",
+    "version": "1.4.0",
+    "description": "支持单独提链与订阅连续办理。订阅办理一次提交，自动付款并按选择保留或关闭续费；不返回结账链接或内部请求。服务费使用整数分 R。"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "当前站点"
+    }
+  ],
+  "paths": {
+    "/api/v1/wallet": {
+      "get": {
+        "summary": "余额与会员",
+        "description": "返回当前 API 密钥所属账户的余额、冻结金额及会员等级。",
+        "operationId": "get_wallet",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Wallet"
+                },
+                "example": {
+                  "balance": 100000,
+                  "frozen": 0,
+                  "unit": "cent_R",
+                  "membership": {
+                    "current": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "automatic": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "next": {
+                      "code": "L2",
+                      "name": "银阶会员",
+                      "threshold": 200000,
+                      "discount": 95,
+                      "description": "服务费减免 5%"
+                    },
+                    "spent": 0,
+                    "remaining": 200000,
+                    "progress": 0,
+                    "source": "automatic",
+                    "until": null,
+                    "fee_override": null,
+                    "tiers": [
+                      {
+                        "code": "L1",
+                        "name": "启程会员",
+                        "threshold": 0,
+                        "discount": 100,
+                        "description": "从第一笔成功订单开始积累"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog": {
+      "get": {
+        "summary": "套餐和地区",
+        "description": "目录只列出已启用方案，member_fee 为当前客户报价。仅支持返回的国家代码。",
+        "operationId": "get_catalog",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Product"
+                      }
+                    },
+                    "membership": {
+                      "$ref": "#/components/schemas/Membership"
+                    },
+                    "unit": {
+                      "const": "cent_R"
+                    },
+                    "countries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string",
+                            "description": ""
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": ""
+                          },
+                          "currency": {
+                            "type": "string",
+                            "description": ""
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    },
+                    "payment_connected": {
+                      "const": false
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "items": [
+                    {
+                      "id": "pro",
+                      "name": "Pro 20x",
+                      "fee": 10000,
+                      "member_fee": 10000
+                    }
+                  ],
+                  "countries": [
+                    {
+                      "code": "US",
+                      "name": "美国",
+                      "currency": "USD"
+                    }
+                  ],
+                  "payment_connected": false,
+                  "unit": "cent_R",
+                  "membership": {
+                    "current": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "automatic": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "next": {
+                      "code": "L2",
+                      "name": "银阶会员",
+                      "threshold": 200000,
+                      "discount": 95,
+                      "description": "服务费减免 5%"
+                    },
+                    "spent": 0,
+                    "remaining": 200000,
+                    "progress": 0,
+                    "source": "automatic",
+                    "until": null,
+                    "fee_override": null,
+                    "tiers": [
+                      {
+                        "code": "L1",
+                        "name": "启程会员",
+                        "threshold": 0,
+                        "discount": 100,
+                        "description": "从第一笔成功订单开始积累"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/membership": {
+      "get": {
+        "summary": "会员权益与成长",
+        "description": "充值与兑换不提升等级。仅成功订单已结算的服务费计入，服务费退回会扣减成长。指定等级到期自动恢复；专属单价优先。",
+        "operationId": "get_membership",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "membership": {
+                      "$ref": "#/components/schemas/Membership"
+                    },
+                    "products": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "growth": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": ""
+                          },
+                          "product_name": {
+                            "type": "string",
+                            "description": ""
+                          },
+                          "spent": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "金额单位为分，100 分 = 1 R"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    },
+                    "unit": {
+                      "const": "cent_R"
+                    },
+                    "basis": {
+                      "const": "settled_service_spend"
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "membership": {
+                    "current": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "automatic": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "next": {
+                      "code": "L2",
+                      "name": "银阶会员",
+                      "threshold": 200000,
+                      "discount": 95,
+                      "description": "服务费减免 5%"
+                    },
+                    "spent": 0,
+                    "remaining": 200000,
+                    "progress": 0,
+                    "source": "automatic",
+                    "until": null,
+                    "fee_override": null,
+                    "tiers": [
+                      {
+                        "code": "L1",
+                        "name": "启程会员",
+                        "threshold": 0,
+                        "discount": 100,
+                        "description": "从第一笔成功订单开始积累"
+                      }
+                    ]
+                  },
+                  "products": [],
+                  "growth": [],
+                  "unit": "cent_R",
+                  "basis": "settled_service_spend"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/quote": {
+      "get": {
+        "summary": "获取当前报价",
+        "description": "创建订单时服务器重新计算并锁定报价。价格快照不会因后续规则调整而改变。",
+        "operationId": "get_quote",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "product_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "pro"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "fee": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "金额单位为分，100 分 = 1 R"
+                    },
+                    "standard": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "金额单位为分，100 分 = 1 R"
+                    },
+                    "membership": {
+                      "$ref": "#/components/schemas/Membership"
+                    },
+                    "payment_connected": {
+                      "const": false
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "fee": 10000,
+                  "standard": 10000,
+                  "membership": {
+                    "current": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "automatic": {
+                      "code": "L1",
+                      "name": "启程会员",
+                      "threshold": 0,
+                      "discount": 100,
+                      "description": "从第一笔成功订单开始积累"
+                    },
+                    "next": {
+                      "code": "L2",
+                      "name": "银阶会员",
+                      "threshold": 200000,
+                      "discount": 95,
+                      "description": "服务费减免 5%"
+                    },
+                    "spent": 0,
+                    "remaining": 200000,
+                    "progress": 0,
+                    "source": "automatic",
+                    "until": null,
+                    "fee_override": null,
+                    "tiers": [
+                      {
+                        "code": "L1",
+                        "name": "启程会员",
+                        "threshold": 0,
+                        "discount": 100,
+                        "description": "从第一笔成功订单开始积累"
+                      }
+                    ]
+                  },
+                  "payment_connected": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session/inspect": {
+      "post": {
+        "summary": "识别 Session 账号",
+        "description": "仅检查 JSON、账号信息一致性及有效期。取 Token exp 和外层 expires 的较早值；不验证签名或在线状态，不等同于上游登录成功。原始 Session 不持久保存。",
+        "operationId": "post_session_inspect",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                },
+                "example": {
+                  "email": "subscriber@example.com",
+                  "account_id": "SESSION_ACCOUNT_ID",
+                  "plan": "free",
+                  "expires_at": "2030-01-01T00:00:00Z",
+                  "status": "format_valid",
+                  "online_verified": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "session": {
+                    "$ref": "#/components/schemas/Session"
+                  }
+                },
+                "required": [
+                  "session"
+                ],
+                "additionalProperties": false
+              },
+              "example": {
+                "session": {
+                  "user": {
+                    "email": "subscriber@example.com"
+                  },
+                  "account": {
+                    "id": "SESSION_ACCOUNT_ID"
+                  },
+                  "accessToken": "REPLACE_WITH_FRESH_SESSION_TOKEN",
+                  "expires": "2030-01-01T00:00:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/redeem": {
+      "post": {
+        "summary": "兑换余额",
+        "description": "每张兑换码只能入账一次。并发兑换由事务锁保护；同码重复提交返回 400，不重复入账。",
+        "operationId": "post_wallet_redeem",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "amount": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "金额单位为分，100 分 = 1 R"
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "ok": true,
+                  "amount": 10000
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "有效兑换码"
+                  }
+                },
+                "required": [
+                  "code"
+                ],
+                "additionalProperties": false
+              },
+              "example": {
+                "code": "XP-REPLACE_WITH_VOUCHER"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders": {
+      "post": {
+        "summary": "创建方案或准备结账",
+        "description": "workflow=subscription 时提交 Session、真实银行卡和 keep_renewal，一次执行生成链接、按所选方案实时含税金额付款、结果核实及续费设置；只返回业务进度。服务费受理时冻结，付款确认后结算。卡资料不持久化，满载返回 429；重复幂等请求不重发付款。省略 workflow 保持原单独提链/草稿行为。",
+        "operationId": "post_orders",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 120
+            },
+            "example": "subscription_20261027_001"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": ""
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "payment_connected": {
+                      "const": false
+                    },
+                    "replayed": {
+                      "type": "boolean"
+                    },
+                    "checkout_connected": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "id": "ORDER_ID",
+                  "status": "draft",
+                  "payment_connected": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderInput"
+              },
+              "example": {
+                "product_id": "pro",
+                "session": {
+                  "user": {
+                    "email": "subscriber@example.com"
+                  },
+                  "account": {
+                    "id": "SESSION_ACCOUNT_ID"
+                  },
+                  "accessToken": "REPLACE_WITH_FRESH_SESSION_TOKEN",
+                  "expires": "2030-01-01T00:00:00Z"
+                },
+                "country": "US",
+                "seats": 1,
+                "accepted": true
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "查询订单列表",
+        "description": "仅返回当前账户最近 200 笔订单。可按邮箱或编号搜索，以及状态筛选。",
+        "operationId": "get_orders",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "订单编号或订阅邮箱"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "例如 draft、cancelled"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Order"
+                      }
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "items": [
+                    {
+                      "id": "ORDER_ID",
+                      "product_id": "pro",
+                      "product_name": "Pro 20x",
+                      "email": "subscriber@example.com",
+                      "country": "US",
+                      "seats": 1,
+                      "status": "draft",
+                      "fee": 10000,
+                      "source": "api",
+                      "renewal": "not_started",
+                      "created_at": "2026-10-27T00:00:00Z",
+                      "updated_at": "2026-10-27T00:00:00Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}": {
+      "get": {
+        "summary": "订单详情与进度",
+        "description": "返回订单、脱敏业务阶段、结账链接与付款状态。仅能访问所属账户；不返回银行卡、安全码、代理凭据或内部请求。",
+        "operationId": "get_orders_id",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "ORDER_ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetail"
+                },
+                "example": {
+                  "order": {
+                    "id": "ORDER_ID",
+                    "product_id": "pro",
+                    "product_name": "Pro 20x",
+                    "email": "subscriber@example.com",
+                    "country": "US",
+                    "seats": 1,
+                    "status": "draft",
+                    "fee": 10000,
+                    "source": "api",
+                    "renewal": "not_started",
+                    "created_at": "2026-10-27T00:00:00Z",
+                    "updated_at": "2026-10-27T00:00:00Z",
+                    "price_snapshot": {
+                      "standard": 10000,
+                      "fee": 10000,
+                      "tier_code": "L1",
+                      "tier_name": "启程会员",
+                      "discount": 100,
+                      "source": "automatic",
+                      "fee_override": null,
+                      "spent": 0
+                    }
+                  },
+                  "events": [
+                    {
+                      "stage": "draft",
+                      "message": "订阅方案已保存；未提交付款。",
+                      "created_at": "2026-10-27T00:00:00Z"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/cancel": {
+      "post": {
+        "summary": "结束结账准备",
+        "description": "仅撤回未进入付款流程的方案或提链任务。订阅办理及已有付款记录的订单不支持手动取消。",
+        "operationId": "post_orders_id_cancel",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "ORDER_ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "example": {
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效、Session 过期或业务校验不通过",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "参数无效、Session 过期或业务校验不通过"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "密钥无效、已撤销或账户停用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "密钥无效、已撤销或账户停用"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限或来源限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "权限或来源限制"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在或不属于当前账户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "资源不存在或不属于当前账户"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等内容冲突或状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "幂等内容冲突或状态冲突"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "请求过于频繁",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "请求过于频繁"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "服务暂不可用"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/payment/prepare": {
+      "post": {
+        "operationId": "payment_prepare",
+        "summary": "准备付款报价",
+        "description": "要求有效长链接与可用余额。付款阶段使用运行机器默认网络，不使用提链代理。接收获授权的银行卡，在内存中准备含税报价；不提交扣款。繁忙时返回 429，请稍后由客户重新提交，不持久化银行卡。",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "accepted": {
+                    "const": true
+                  },
+                  "card": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "number": {
+                        "type": "string",
+                        "writeOnly": true
+                      },
+                      "month": {
+                        "type": "string",
+                        "writeOnly": true
+                      },
+                      "year": {
+                        "type": "string",
+                        "writeOnly": true
+                      },
+                      "cvc": {
+                        "type": "string",
+                        "writeOnly": true
+                      }
+                    },
+                    "required": [
+                      "number",
+                      "month",
+                      "year",
+                      "cvc"
+                    ]
+                  }
+                },
+                "required": [
+                  "accepted",
+                  "card"
+                ]
+              },
+              "example": {
+                "accepted": true,
+                "card": {
+                  "number": "AUTHORIZED_CARD_NUMBER",
+                  "month": "12",
+                  "year": "2030",
+                  "cvc": "CARD_SECURITY_CODE"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "任务已受理，查询订单查看结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "accepted": true
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "操作成功或同一确认已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "accepted": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "404": {
+            "description": "订单不存在或不属于当前账户"
+          },
+          "409": {
+            "description": "状态不符或报价过期"
+          },
+          "429": {
+            "description": "频率或并发已满"
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/payment/confirm": {
+      "post": {
+        "operationId": "payment_confirm",
+        "summary": "确认付款金额",
+        "description": "须明确取得客户对当前含税金额的同意，再提交当前 attempt_id、amount、currency。重复确认同一任务不会再次提交付款；响应不明应查询订单。",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "accepted": {
+                    "const": true
+                  },
+                  "attempt_id": {
+                    "type": "string"
+                  },
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "currency": {
+                    "type": "string",
+                    "enum": [
+                      "usd",
+                      "php",
+                      "jpy",
+                      "sgd",
+                      "gbp",
+                      "egp",
+                      "try"
+                    ]
+                  }
+                },
+                "required": [
+                  "accepted",
+                  "attempt_id",
+                  "amount",
+                  "currency"
+                ]
+              },
+              "example": {
+                "accepted": true,
+                "attempt_id": "PAYMENT_ATTEMPT_ID",
+                "amount": 12345,
+                "currency": "php"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "任务已受理，查询订单查看结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "accepted": true
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "操作成功或同一确认已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "accepted": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "404": {
+            "description": "订单不存在或不属于当前账户"
+          },
+          "409": {
+            "description": "状态不符或报价过期"
+          },
+          "429": {
+            "description": "频率或并发已满"
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/payment/check": {
+      "post": {
+        "operationId": "payment_check",
+        "summary": "核实付款结果",
+        "description": "仅核实原订单付款结果，不重新提交卡片或扣款。需额外验证时由客户完成官方验证后再核实。",
+        "security": [
+          {
+            "BearerKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+              },
+              "example": {}
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "任务已受理，查询订单查看结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "accepted": true
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "操作成功或同一确认已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                },
+                "example": {
+                  "accepted": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "404": {
+            "description": "订单不存在或不属于当前账户"
+          },
+          "409": {
+            "description": "状态不符或报价过期"
+          },
+          "429": {
+            "description": "频率或并发已满"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "在开发接入创建 xp_live_ 密钥；仅显示一次，不放在 URL 或日志中。"
+      }
+    },
+    "schemas": {
+      "Tier": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "等级标识"
+          },
+          "name": {
+            "type": "string",
+            "description": "会员名称"
+          },
+          "threshold": {
+            "type": "integer",
+            "format": "int64",
+            "description": "有效消费门槛，单位分"
+          },
+          "discount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "实付比例；95 表示减免 5%"
+          },
+          "description": {
+            "type": "string",
+            "description": "权益说明"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "Membership": {
+        "type": "object",
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/Tier"
+          },
+          "automatic": {
+            "$ref": "#/components/schemas/Tier"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Tier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "spent": {
+            "type": "integer",
+            "format": "int64",
+            "description": "成功订单扣款减去退费后的有效消费"
+          },
+          "remaining": {
+            "type": "integer",
+            "format": "int64",
+            "description": "距离下一级自动等级"
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "source": {
+            "enum": [
+              "automatic",
+              "manual"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "fee_override": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "专属单价，非空时优先于等级折扣"
+          },
+          "tiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tier"
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "accessToken",
+          "user",
+          "account"
+        ],
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "刚获取的完整令牌；不会在响应或日志回显"
+          },
+          "user": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email"
+              }
+            },
+            "required": [
+              "email"
+            ],
+            "additionalProperties": true
+          },
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "会话空间标识"
+              },
+              "planType": {
+                "type": "string",
+                "description": "当前方案，可选"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": true
+          },
+          "expires": {
+            "type": "string",
+            "format": "date-time",
+            "description": "会话到期时间，与 Token 的 exp 取较早值"
+          }
+        },
+        "additionalProperties": true
+      },
+      "SessionInfo": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "account_id": {
+            "type": "string",
+            "description": ""
+          },
+          "plan": {
+            "type": "string",
+            "description": ""
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "const": "format_valid"
+          },
+          "online_verified": {
+            "const": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "OrderInput": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "description": "服务目录返回的 id"
+          },
+          "session": {
+            "$ref": "#/components/schemas/Session"
+          },
+          "country": {
+            "enum": [
+              "PH",
+              "US",
+              "JP",
+              "SG",
+              "GB",
+              "EG",
+              "TR"
+            ]
+          },
+          "seats": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Team 最少 2，个人方案填 1"
+          },
+          "accepted": {
+            "const": true,
+            "description": "客户已明确接受服务约定"
+          },
+          "prepare": {
+            "type": "boolean",
+            "default": false,
+            "description": "true：排队生成结账链接；false：仅草稿。均不扣费、不付款。"
+          },
+          "workspace_name": {
+            "type": "string",
+            "description": "Team 空间名称，默认 My workspace"
+          },
+          "premium_seats": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 1,
+            "description": "Team 高级席位，seats 为普通席位数量"
+          },
+          "workflow": {
+            "type": "string",
+            "enum": [
+              "checkout",
+              "subscription"
+            ],
+            "default": "checkout",
+            "description": "checkout 保留原提链行为；subscription 自动生成链接、付款并处理续费。"
+          },
+          "card": {
+            "type": "object",
+            "description": "订阅办理必填。真实卡资料仅在本次内存处理，不持久化。",
+            "required": [
+              "number",
+              "month",
+              "year",
+              "cvc"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "number": {
+                "type": "string",
+                "writeOnly": true
+              },
+              "month": {
+                "type": "string",
+                "writeOnly": true
+              },
+              "year": {
+                "type": "string",
+                "writeOnly": true
+              },
+              "cvc": {
+                "type": "string",
+                "writeOnly": true
+              }
+            }
+          },
+          "keep_renewal": {
+            "type": "boolean",
+            "default": false,
+            "description": "订阅办理付款成功后，默认关闭自动续费；true 保留续费。"
+          }
+        },
+        "required": [
+          "product_id",
+          "session",
+          "country",
+          "seats",
+          "accepted"
+        ],
+        "additionalProperties": false
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": ""
+          },
+          "product_id": {
+            "type": "string",
+            "description": ""
+          },
+          "product_name": {
+            "type": "string",
+            "description": ""
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "从 Session 自动识别"
+          },
+          "country": {
+            "type": "string",
+            "description": ""
+          },
+          "seats": {
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "queued",
+              "processing",
+              "awaiting_payment",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "review"
+            ]
+          },
+          "fee": {
+            "type": "integer",
+            "format": "int64",
+            "description": "创建时锁定的服务费报价，草稿不扣款"
+          },
+          "source": {
+            "enum": [
+              "web",
+              "api"
+            ]
+          },
+          "renewal": {
+            "type": "string",
+            "description": "kept 保留；pending 处理中；disabled 已关闭；review 待核实；not_started 未开始。"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "price_snapshot": {
+            "$ref": "#/components/schemas/PriceSnapshot",
+            "description": "详情返回创建订单时的价格快照；旧订单为空对象，列表不返回此字段"
+          },
+          "workflow": {
+            "enum": [
+              "checkout",
+              "subscription"
+            ]
+          },
+          "keep_renewal": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "PriceSnapshot": {
+        "type": "object",
+        "properties": {
+          "standard": {
+            "type": "integer",
+            "format": "int64",
+            "description": "金额单位为分，100 分 = 1 R"
+          },
+          "fee": {
+            "type": "integer",
+            "format": "int64",
+            "description": "金额单位为分，100 分 = 1 R"
+          },
+          "tier_code": {
+            "type": "string",
+            "description": ""
+          },
+          "tier_name": {
+            "type": "string",
+            "description": ""
+          },
+          "discount": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "automatic",
+              "manual"
+            ]
+          },
+          "fee_override": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "spent": {
+            "type": "integer",
+            "format": "int64",
+            "description": "金额单位为分，100 分 = 1 R"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "OrderDetail": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "$ref": "#/components/schemas/Order"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stage": {
+                  "type": "string",
+                  "description": ""
+                },
+                "message": {
+                  "type": "string",
+                  "description": "对外业务阶段说明，不含原始内部请求"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "checkout": {
+            "$ref": "#/components/schemas/Checkout"
+          },
+          "payment": {
+            "$ref": "#/components/schemas/Payment"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": ""
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          },
+          "description": {
+            "type": "string",
+            "description": ""
+          },
+          "fee": {
+            "type": "integer",
+            "format": "int64",
+            "description": "标准服务费"
+          },
+          "member_fee": {
+            "type": "integer",
+            "format": "int64",
+            "description": "当前账户实际服务费"
+          },
+          "tag": {
+            "type": "string",
+            "description": ""
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": ""
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "Wallet": {
+        "type": "object",
+        "properties": {
+          "balance": {
+            "type": "integer",
+            "format": "int64",
+            "description": "可用余额"
+          },
+          "frozen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "冻结金额"
+          },
+          "unit": {
+            "const": "cent_R"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/Membership"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "供用户阅读的中文错误原因"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "Checkout": {
+        "type": "object",
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string",
+            "description": "仅本人或管理员可见的最终结账链接"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本平台的链接保留期限，不保证上游期限"
+          },
+          "expired": {
+            "type": "boolean"
+          },
+          "payment_connected": {
+            "type": "boolean",
+            "description": "站内付款开关与运行环境是否可用，不代表上游已验证成功"
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "waiting_message": {
+            "type": "string",
+            "description": "等待代理或重试的公开说明"
+          },
+          "next_check_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "Payment": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "attempt_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "preparing",
+              "quoted",
+              "submitting",
+              "checking",
+              "action_required",
+              "review",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "amount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "上游币种最小单位，JPY 为整数日元"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "last4": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "quote_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "fee_state": {
+            "type": "string",
+            "enum": [
+              "held",
+              "released",
+              "charged"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
