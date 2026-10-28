@@ -1,0 +1,13 @@
+package platform
+
+import "strings"
+
+// This is an exact vocabulary, never arbitrary protocol_error suffixes or text
+// taken from a provider response. Customer responses do not include these codes.
+var protocolDiagnosticCodes = func() map[string]bool {
+	allowed := map[string]bool{}
+	for _, code := range strings.Fields(`activation_pending approval_blocked authorized billing_automatic_tax_unrecognized_customer_location cancellation_pending checkout_amount_changed checkout_currency_mismatch checkout_id_invalid checkout_price_missing checkout_total_missing checkout_ui_mode_invalid checkpoint_failed confirmation_token_missing customer_portal_unavailable deadline_exceeded existing_subscription hosted_url_invalid hosted_url_missing init_checksum_missing invalid_json_response invalid_return_url not_charged payment_action_required payment_approval_failed payment_cancelled payment_intent_secret_missing payment_intent_state_unavailable payment_method_missing payment_not_submitted payment_page_id_missing payment_pending processor_entity_invalid protocol_error publishable_key_missing radar_session_missing recovery_failed renewal_state_unknown sentinel_challenge_missing sentinel_context_mismatch sentinel_dx_missing sentinel_incomplete sentinel_pow_missing sentinel_turnstile_error sentinel_turnstile_missing session_token_required session_expired setup_intent_failed setup_intent_missing stripe_build_missing stripe_identity_missing subscription_not_found subscription_status_invalid unexpected_redirect network_error network_timeout account_mismatch account_not_found personal_account_required proxy_session_unavailable proxy_session_expired proxy_session_changed proxy_country_mismatch`) {
+		allowed[code] = true
+	}
+	return allowed
+}()

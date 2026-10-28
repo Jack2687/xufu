@@ -20,6 +20,10 @@ type SessionInfo struct {
 // This inspects supplied metadata and expiry only. It neither authenticates a
 // token signature nor calls an upstream service. Raw session data is never saved.
 func inspectSession(raw json.RawMessage) (SessionInfo, error) {
+	return inspectSessionMode(raw, false)
+}
+
+func inspectSessionMode(raw json.RawMessage, refreshable bool) (SessionInfo, error) {
 	var info SessionInfo
 	if len(raw) == 0 || len(raw) > 262144 {
 		return info, bad("请粘贴完整 Session JSON（最多 256 KB）")
@@ -75,7 +79,7 @@ func inspectSession(raw json.RawMessage) (SessionInfo, error) {
 			expiry = date
 		}
 	}
-	if !expiry.After(time.Now()) {
+	if !refreshable && !expiry.After(time.Now()) {
 		return info, bad("Session 已过期，请重新获取")
 	}
 	if v, ok := claims["nbf"].(float64); ok && v > float64(time.Now().Unix()+60) {
@@ -96,11 +100,25 @@ func inspectSession(raw json.RawMessage) (SessionInfo, error) {
 	}
 	info.ExpiresAt = expiry
 	info.Status = "format_valid"
+	if refreshable {
+		credentials, deadline, err := sessionCredentials(raw, info)
+		if err == nil {
+			_, err = protocolSession(credentials)
+		}
+		if err != nil {
+			return info, err
+		}
+		if !deadline.After(time.Now()) {
+			return info, bad("Session 已过期，请重新获取")
+		}
+		info.ExpiresAt = deadline
+	}
 	return info, nil
 }
 func (a *App) checkSession(w http.ResponseWriter, r *http.Request) {
 	var v struct {
-		Session json.RawMessage `json:"session"`
+		Session  json.RawMessage `json:"session"`
+		Workflow string          `json:"workflow"`
 	}
 	if !read(w, r, &v) {
 		return
@@ -109,7 +127,7 @@ func (a *App) checkSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "检查过于频繁，请稍后再试")
 		return
 	}
-	info, e := inspectSession(v.Session)
+	info, e := inspectSessionMode(v.Session, v.Workflow == "subscription")
 	if e != nil {
 		fail(w, 400, e.Error())
 		return

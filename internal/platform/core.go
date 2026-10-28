@@ -494,7 +494,7 @@ func (a *App) public(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := a.config(r.Context(), "scheduler")
-	out(w, 200, M{"site": a.config(r.Context(), "site"), "products": p, "announcements": ann, "checkout_connected": str(cfg, "engine") == "checkout", "default_country": str(cfg, "default_country"), "payment_connected": a.paymentEnabled(r.Context()), "tiers": a.config(r.Context(), "tiers")})
+	out(w, 200, M{"site": a.config(r.Context(), "site"), "products": p, "announcements": ann, "checkout_connected": str(cfg, "engine") == "checkout", "default_country": str(cfg, "default_country"), "payment_connected": a.subscriptionEnabled(r.Context()), "tiers": a.config(r.Context(), "tiers")})
 }
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	if !a.limit(r.Context(), "login:"+ip(r), num(a.config(r.Context(), "risk"), "login_per_minute", 10)) {

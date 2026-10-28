@@ -9,6 +9,10 @@ import (
 // Checkout can also lose a sticky session while waiting for a safe retry. Only
 // a fenced job that has never attempted its upstream write may rotate it.
 func (a *App) restartCheckoutNetworkTx(ctx context.Context, tx pgx.Tx, id, code string) (bool, error) {
+	var protocol bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM subscription_protocol WHERE order_id=$1)", id).Scan(&protocol); err != nil || protocol {
+		return false, err
+	}
 	if code != "proxy_session_changed" && code != "proxy_session_expired" {
 		return false, nil
 	}

@@ -185,7 +185,9 @@ func TestStandaloneRenewalIdempotencyOwnershipAndAdmission(t *testing.T) {
 	h.a.paymentStart = func(context.Context, paymentInput) (paymentProcess, error) {
 		return &fakePayment{events: make(chan paymentEvent, 16)}, nil
 	}
-	expect(t, h.request("POST", "/api/orders", M{"product_id": "pro", "session": testSession("renewal@example.com"), "country": "PH", "seats": 1, "accepted": true, "workflow": "subscription", "card": paymentPrepareBody()["card"]}, h.member, map[string]string{"Idempotency-Key": uid()}), 409)
+	session := testSession("renewal@example.com")
+	session["sessionToken"] = "TEST_ONLY_SESSION_TOKEN"
+	expect(t, h.request("POST", "/api/orders", M{"product_id": "pro", "session": session, "country": "PH", "seats": 1, "accepted": true, "workflow": "subscription", "card": paymentPrepareBody()["card"]}, h.member, map[string]string{"Idempotency-Key": uid()}), 409)
 }
 
 func TestStandaloneRenewalConcurrentClaimsAndRestart(t *testing.T) {

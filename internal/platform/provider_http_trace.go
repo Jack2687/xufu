@@ -72,9 +72,11 @@ func safeDiagnosticDetails(input M) M {
 	out := M{}
 	for k, v := range input {
 		switch k {
-		case "dns_ms", "connect_ms", "tls_ms", "first_byte_ms":
+		case "dns_ms", "connect_ms", "tls_ms", "first_byte_ms", "connection_ready_ms", "request_write_ms", "response_wait_ms", "network_stage_elapsed_ms", "request_attempt":
 			var n int64
 			switch x := v.(type) {
+			case int:
+				n = int64(x)
 			case int64:
 				n = x
 			case float64:
@@ -83,7 +85,18 @@ func safeDiagnosticDetails(input M) M {
 				continue
 			}
 			if n >= 0 && n <= 3600000 {
+				if k == "request_attempt" && (n < 1 || n > 10) {
+					continue
+				}
 				out[k] = n
+			}
+		case "network_stage":
+			if s, ok := v.(string); ok && (s == "connection" || s == "request_write" || s == "response_headers" || s == "response_body") {
+				out[k] = s
+			}
+		case "protocol_code":
+			if s, ok := v.(string); ok && protocolDiagnosticCodes[s] {
+				out[k] = s
 			}
 		case "network_reason":
 			if s, ok := v.(string); ok && (s == "timeout" || s == "proxy_connect" || s == "tls" || s == "dns" || s == "connection") {

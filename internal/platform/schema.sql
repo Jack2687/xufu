@@ -171,3 +171,12 @@ INSERT INTO order_checkout_links(order_id,round,url_enc,expires_at)
  FROM checkout_runs c LEFT JOIN payment_runs p ON p.order_id=c.order_id
  WHERE COALESCE(NULLIF(c.hosted_url_enc,''),NULLIF(p.hosted_url_enc,'')) IS NOT NULL
  ON CONFLICT(order_id,round) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS subscription_protocol (
+ order_id text PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+ checkpoint_enc text NOT NULL DEFAULT '',
+ phase text NOT NULL DEFAULT 'queued',
+ lease_token text, lease_until timestamptz,
+ expires_at timestamptz NOT NULL DEFAULT now()+interval '24 hours',
+ updated_at timestamptz NOT NULL DEFAULT now()
+);

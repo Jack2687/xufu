@@ -69,7 +69,9 @@ func (a *App) saveProviderDiagnostic(d providerDiagnostic) {
 		return
 	}
 	if _, ok := traceCodes[d.Code]; !ok {
-		d.Code = "unclassified"
+		if _, ok := paymentMessages[d.Code]; !ok {
+			d.Code = "unclassified"
+		}
 	}
 	if !safeRequestID.MatchString(d.RequestID) {
 		d.RequestID = ""

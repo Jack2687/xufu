@@ -248,7 +248,7 @@ func (a *App) claimRenewal(ctx context.Context) (string, string, error) {
 		return "", "", nil
 	}
 	var id string
-	e = tx.QueryRow(ctx, `SELECT s.order_id FROM subscription_runs s JOIN payment_runs p ON p.order_id=s.order_id WHERE s.renewal_state='pending' AND p.state='succeeded' AND s.next_at<=now() AND (s.lease_until IS NULL OR s.lease_until<now()) ORDER BY s.next_at,s.order_id LIMIT 1 FOR UPDATE OF s SKIP LOCKED`).Scan(&id)
+	e = tx.QueryRow(ctx, `SELECT s.order_id FROM subscription_runs s JOIN payment_runs p ON p.order_id=s.order_id WHERE s.renewal_state='pending' AND p.state='succeeded' AND s.next_at<=now() AND (s.lease_until IS NULL OR s.lease_until<now()) AND NOT EXISTS(SELECT 1 FROM subscription_protocol c WHERE c.order_id=s.order_id) ORDER BY s.next_at,s.order_id LIMIT 1 FOR UPDATE OF s SKIP LOCKED`).Scan(&id)
 	if e == pgx.ErrNoRows {
 		return "", "", nil
 	}

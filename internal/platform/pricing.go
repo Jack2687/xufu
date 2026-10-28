@@ -28,5 +28,5 @@ func (a *App) quote(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "报价暂不可用")
 		return
 	}
-	out(w, 200, M{"fee": feeFor(m, standard), "standard": standard, "membership": m, "payment_connected": a.paymentEnabled(r.Context())})
+	out(w, 200, M{"fee": feeFor(m, standard), "standard": standard, "membership": m, "payment_connected": a.subscriptionEnabled(r.Context())})
 }

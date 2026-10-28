@@ -141,7 +141,9 @@ func TestCheckoutNoUnsafeRetryOrDirectFallback(t *testing.T) {
 }
 
 func prepareRequest() M {
-	return M{"product_id": "pro", "session": testSession("subscription@example.com"), "country": "PH", "seats": 1, "accepted": true, "prepare": true, "workspace_name": "Test", "premium_seats": 1}
+	session := testSession("subscription@example.com")
+	session["sessionToken"] = "TEST_ONLY_SESSION_TOKEN"
+	return M{"product_id": "pro", "session": session, "country": "PH", "seats": 1, "accepted": true, "prepare": true, "workspace_name": "Test", "premium_seats": 1}
 }
 func (h *harness) addProxy(country string, capacity int) string {
 	r := expect(h.t, h.request("POST", "/api/admin/resources", M{"name": "QA proxy", "country": country, "enabled": true, "weight": 1, "capacity": capacity, "endpoint": "proxy.example.com:8080:user:QA_PROXY_PASSWORD"}, h.admin, nil), 200)

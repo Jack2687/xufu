@@ -52,6 +52,7 @@ docker compose -p xufu up -d --no-deps --no-build --force-recreate app
 
 ## 运行与网络
 
+- Go 构建镜像为 1.25；新订阅在 Go 内执行。启动迁移创建 `subscription_protocol`，不改变旧单协议。`scripts/active-work.sql` 由 psql 执行，兼容升级前尚无此表的库，并检查新协议活动租约。
 - Node/Playwright/Chromium 随应用镜像安装，应用以 UID 10001 运行；共享内存 1GiB，init 回收浏览器子进程，日志滚动保留。
 - 订阅办理按地区分配代理，从提链、付款到订阅查询、授权刷新、自动关闭续费及复查，全程复用提链时保存的订单代理会话。续费管理菜单的独立任务继续使用后台全局代理。数据库中的原地区/全局代理配置按原值迁移。
 - `.env`、本机业务数据、迁移包、HAR 和密钥不进入 GitHub 或镜像。测试不发送真实付款或续费操作。

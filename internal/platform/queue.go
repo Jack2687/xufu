@@ -40,7 +40,7 @@ func (a *App) claim(ctx context.Context, kind string) (*Job, error) {
 	limit := num(cfg, "max_parallel", 2)
 	perUser := num(cfg, "per_user_parallel", 1)
 	// Never retry an expired lease with uncertain upstream side effects.
-	rows, e := tx.Query(ctx, "UPDATE jobs SET state=CASE WHEN side_effect_started THEN 'review' WHEN attempts>=max_attempts THEN 'failed' ELSE 'queued' END,error_code='lease_expired',lease_token=NULL,lease_until=NULL,next_at=now()+($1*interval '1 second'),updated_at=now() WHERE state='running' AND lease_until<now() RETURNING order_id,state", num(cfg, "retry_delay_seconds", 30))
+	rows, e := tx.Query(ctx, "UPDATE jobs SET state=CASE WHEN side_effect_started THEN 'review' WHEN attempts>=max_attempts THEN 'failed' ELSE 'queued' END,error_code='lease_expired',lease_token=NULL,lease_until=NULL,next_at=now()+($1*interval '1 second'),updated_at=now() WHERE state='running' AND lease_until<now() AND NOT EXISTS(SELECT 1 FROM subscription_protocol s WHERE s.order_id=jobs.order_id) RETURNING order_id,state", num(cfg, "retry_delay_seconds", 30))
 	if e != nil {
 		return nil, e
 	}

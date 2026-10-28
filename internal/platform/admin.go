@@ -49,7 +49,7 @@ func (a *App) adminOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	recent, _ := a.query(r.Context(), "SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.activation,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 8")
 	risk, _ := a.query(r.Context(), "SELECT * FROM risk_events ORDER BY id DESC LIMIT 5")
-	out(w, 200, M{"stats": rows[0], "orders": recent, "risks": risk, "scheduler": a.config(r.Context(), "scheduler"), "payment_connected": a.paymentEnabled(r.Context())})
+	out(w, 200, M{"stats": rows[0], "orders": recent, "risks": risk, "scheduler": a.config(r.Context(), "scheduler"), "payment_connected": a.subscriptionEnabled(r.Context())})
 }
 func (a *App) users(w http.ResponseWriter, r *http.Request) {
 	a.list(w, r, `SELECT u.id,u.email,u.name,u.role,u.status,u.balance,u.frozen,u.fee_override,u.invite_code,u.created_at,(SELECT count(*) FROM orders o WHERE o.user_id=u.id) AS orders FROM users u WHERE ($1='' OR u.email ILIKE '%'||$1||'%' OR u.name ILIKE '%'||$1||'%') ORDER BY u.created_at DESC LIMIT 500`, r.URL.Query().Get("q"))

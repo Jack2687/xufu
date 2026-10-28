@@ -1,3 +1,50 @@
+# 2026-10-28 订单中心与资金流水（最新，本地未发布）
+
+- 订单中心新增搜索和付款/续费/套餐/办理状态组合筛选，展示服务费优惠、卡尾号、上游报价/实收、状态与更新时间；资金流水新增订单/说明搜索、类型/日期筛选、可用与冻结变动、双余额、关联订单、当前付款摘要及筛选汇总。详细规则见 [客户记录](customer-records.md)。
+- 客户接口采用字段白名单与同客户关联；不修改资金写入事务，不把账本 `amount=0` 误当冻结金额为零。首条冻结、结算、解冻、300 条截断前序余额、跨客户错误关联、原始错误/私有快照不泄露、仅提链不展示付款、API key 兼容均有集成测试。
+- `TestCustomerRecordProjections` 3.192s；与会员回归一起复验 4.303s；`TestPlatformIntegration` 4.107s；`go vet ./internal/platform` 和前端类型检查/构建通过。此前完整订阅运行时全套测试结果继续适用，本次未改付款或续费执行逻辑。
+- OpenAPI 1.6.1，12 条路径、91 处本地引用可解析；列表新增可选 PaymentSummary，不改原有接口字段。
+- 1680px 桌面与 390px 手机实际浏览器验收；21 项浏览器断言通过，包括分页、空态、组合筛选、刷新保持筛选、续费异常与已付款分开、结束日包含、非法日期提示、关联订单打开七步详情、JPY 金额和页面无横向溢出。证据在 `.local/records-ui-result.json`、`.local/records-ui-check.js`、`.local/records-*-mobile.png` 及桌面截图。
+- 本地只读预览继续运行于 http://127.0.0.1:18865/ ，独立 PostgreSQL 18866，schema `cslive_preview`。程序 `.local/cslive-records-view.exe`，PID 文件 `.local/cslive-view.pid`。未启动 worker、旧18860/18862副本或任何正式服务。
+- 预览增加 10 笔 `DEMO-ORDER-*` 演示订单及对应账本；加上此前 fixture 共13订单、20流水，全部仅用于界面验收，不代表实际付款或取消续费。未提交、推送或部署。
+
+---
+
+# 2026-10-28 cs-live 新订阅与 Space 接口兼容（最新，本地未发布）
+
+本条记录覆盖下方历史记录中与当前新订阅不一致的描述。正式历史版本以工作区运维 runbook 为准，本轮没有提交 Git、推送或部署，也没有真实付款或取消订阅。
+
+## 协议与平台验证
+
+- `go test ./... -count=1 -timeout 600s` 完整通过：cslive 2.129s、platform 193.372s；使用本次隔离 PostgreSQL 18866，与旧业务数据库隔离。第一次全套的旧 Session fixture 缺少新必需字段，修复后以上最终全套通过。
+- `go vet ./...`、Linux amd64 编译通过；额外使用 Go 1.25.0 编译通过，与 Docker 最低工具链一致。前端最新 `npm run check` / `npm run build` 通过。
+- 新测试覆盖完整 Pay/Recover、提链前刷新、账号与订阅基线、Hosted 扣款后辅助失败仍保留扣款证据、未知/仅授权/拒付/额外验证、恢复不再次建单确认、PAN/CVV 不落检查点。
+- 平台覆盖固定出口及漂移拦截、原代理过期、持久检查点与租约、队列/进程恢复、未知冻结及明确失败解冻、付款只结算一次、升级零差价和实收补录、随机正式账单副本、客户/其他客户/管理员/API key 权限、HTTP 状态/耗时及秘密不投影。
+- 新协议每单固定 IP 与账单；取消仍保留 xufu 最多一次发送约束。完整流程及与附件的差异见 [订阅协议](subscription-protocol.md)。未接入附件交互式 payment-action，额外验证不视为自动成功。
+- 发布活动检查 SQL 在隔离预览 schema 中验证：无活动返回0，添加新协议活动租约返回1，临时改名模拟升级前缺表返回0，事务最终回滚。旧 schema 与新 schema 均可执行。
+
+## 页面与信息边界
+
+- 独立预览 18865 未运行付款/续费 worker，订单为测试 schema 手工模拟状态。桌面及 390px 页面目视检查；手机页面宽度390、滚动宽度390，无页面横向溢出，订单表格自身可横向滚动。
+- 七步标题固定；取消待核实时第六步提示、最后一步未完成，保留续费时显示“已选择保留”且完成。客户无管理员完整链条；后台展示请求关联编号、HTTP 状态、网络阶段/尝试次数及分段耗时。
+- 本轮捕获211条浏览器请求，外域请求0、HTTP 5xx为0、页面 JavaScript 错误0。浏览器工具曾因等待移动端折叠菜单中不存在的文字超时，改用实际订单入口完成验收，非页面运行异常。
+- 本轮证据位于 `.local/cslive-verification.json`、`.local/cslive-browser-network.json`、`.local/cslive-customer-mobile-final.png`、`.local/cslive-customer-keep-mobile.png`、`.local/cslive-admin-diagnostics.png`。旧 `.local/browser-evidence` 不作为本轮证据。
+
+本轮预览18865、测试PostgreSQL18866和专属浏览器会话已停止；旧业务18860/18862保持停止。
+
+## API 与 Space Pro 供应商
+
+- OpenAPI 1.6.0 保留12路径/13操作，90处本地引用可解析；JSON Schema 检查通过。订阅条件要求 sessionToken 或 cookies，独立 checkout 保留 AT-only；示例包含刷新凭据，can_check 与币种大小写/最小单位已说明。
+- API/会员契约针对性测试2.825s、移除手动取消的兼容测试3.716s通过。
+- merge 与 user 基线源码树相同 `ebe4005de30e1c0d1e740fe6be7411d52d0a91c8`，本轮五个 Space 文件改动逐字节一致：新单提前检查刷新凭据；付款币种统一大写，避免小写jpy被除以100；对应测试及供应商说明同步。
+- Space gptpay全包0.839s，XUPay HTTP集成4.570s，Pro全自动XUPay分支4.613s，相关vet与Linux构建通过。同源码复用结果，没有声称运行Space所有测试。
+- 使用 **Space实际Go客户端 → 本机序付实际HTTP API → 隔离PostgreSQL** 联调：钱包、目录、Pro20/JP与Pro5/PH受理、幂等重放及详情投影通过；每单5种已付款/生效/续费状态正确映射，实收29999jpy→29999日元、29999php→299.99PHP。付款结果只在测试schema模拟，未连接真实上游。报告在 `../chatgpt-space-merge/.local/xupay-contract/result.json`，测试源为本地忽略文件。
+- 两套Space正式供应商地址/API Key未改变；本次Space适配同样尚未提交或上线。当前普通接口能接新字段，缺刷新凭据必须重新登录，不能伪造凭据或修改原订单快照重付。
+
+---
+
+以下全部为历史记录，不代表本轮已经上线或真实支付成功。
+
 # 2026-10-28 续费全局代理与质量检测（最新）
 
 ## 2026-10-28 正式账单随机池

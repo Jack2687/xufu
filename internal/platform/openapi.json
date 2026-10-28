@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "序付 XUPAY 开发者 API",
-    "version": "1.5.0",
+    "version": "1.6.1",
     "description": "支持单独提链与订阅连续办理。订阅办理一次提交，自动付款并按选择保留或关闭续费；付款、订阅生效、续费分别返回业务状态。订阅订单不返回结账链接或内部诊断。服务费使用整数分 R。"
   },
   "servers": [
@@ -226,7 +226,7 @@
                     },
                     "payment_connected": {
                       "type": "boolean",
-                      "description": "当前付款功能是否开放且运行环境可用，不代表实际支付已验证成功"
+                      "description": "当前订阅付款功能是否开放；新订阅使用服务端协议，不依赖旧浏览器环境，不代表真实支付已验证成功。"
                     }
                   },
                   "required": [],
@@ -636,7 +636,7 @@
                     },
                     "payment_connected": {
                       "type": "boolean",
-                      "description": "当前付款功能是否开放且运行环境可用，不代表实际支付已验证成功"
+                      "description": "当前订阅付款功能是否开放；新订阅使用服务端协议，不依赖旧浏览器环境，不代表真实支付已验证成功。"
                     }
                   },
                   "required": [],
@@ -785,7 +785,7 @@
     "/api/v1/session/inspect": {
       "post": {
         "summary": "识别 Session 账号",
-        "description": "仅检查 JSON、账号信息一致性及有效期。取 Token exp 和外层 expires 的较早值；不验证签名或在线状态，不等同于上游登录成功。原始 Session 不持久保存。",
+        "description": "只检查 JSON、账号一致性与期限，不验证签名或在线登录状态。workflow=subscription 要求 sessionToken 或受支持的会话 Cookie；AT 过期但刷新凭据期限有效时可受理，办理时再在线刷新核对。其他工作流需要有效 AT。原始 Session 不持久保存。",
         "operationId": "post_session_inspect",
         "security": [
           {
@@ -913,6 +913,15 @@
                 "properties": {
                   "session": {
                     "$ref": "#/components/schemas/Session"
+                  },
+                  "workflow": {
+                    "type": "string",
+                    "enum": [
+                      "checkout",
+                      "subscription"
+                    ],
+                    "default": "checkout",
+                    "description": "订阅办理请选择 subscription；省略按独立提链检查。"
                   }
                 },
                 "required": [
@@ -929,8 +938,10 @@
                     "id": "SESSION_ACCOUNT_ID"
                   },
                   "accessToken": "REPLACE_WITH_FRESH_SESSION_TOKEN",
-                  "expires": "2030-01-01T00:00:00Z"
-                }
+                  "expires": "2030-01-01T00:00:00Z",
+                  "sessionToken": "REPLACE_WITH_YOUR_SESSION_TOKEN"
+                },
+                "workflow": "subscription"
               }
             }
           }
@@ -1095,7 +1106,7 @@
     "/api/v1/orders": {
       "post": {
         "summary": "创建方案或准备结账",
-        "description": "workflow=subscription 时一次提交 Session、真实银行卡和 keep_renewal，系统自动办理付款、订阅生效核实和续费设置。账单由后台选择，无需客户提交；不返回结账链接。服务费受理时冻结，付款确认后结算。生效或续费异常保留付款成功，禁止重建订单重复付款。卡资料不持久化；重试创建须沿用原 Idempotency-Key。省略 workflow 或 checkout 时仅提链/草稿，生成链接后即结束，不进入付款。",
+        "description": "workflow=subscription 时一次提交带刷新凭据的完整 Session、真实银行卡和 keep_renewal，系统自动办理付款、订阅生效核实和续费设置。账单由后台选择，无需客户提交；不返回结账链接。服务费受理时冻结，付款确认后结算。生效或续费异常保留付款成功，禁止重建订单重复付款。卡资料不持久化；重试创建须沿用原 Idempotency-Key。省略 workflow 或设置 workflow=checkout 时仅提链/草稿，生成链接后即结束，不进入付款。新订阅使用服务端连续流程，每单固定同一代理出口及一份后台随机正式账单。",
         "operationId": "post_orders",
         "security": [
           {
@@ -1132,7 +1143,7 @@
                     },
                     "payment_connected": {
                       "type": "boolean",
-                      "description": "当前付款功能是否开放且运行环境可用，不代表实际支付已验证成功"
+                      "description": "当前订阅付款功能是否开放；新订阅使用服务端协议，不依赖旧浏览器环境，不代表真实支付已验证成功。"
                     },
                     "replayed": {
                       "type": "boolean"
@@ -1262,7 +1273,8 @@
                     "id": "SESSION_ACCOUNT_ID"
                   },
                   "accessToken": "REPLACE_WITH_FRESH_SESSION_TOKEN",
-                  "expires": "2030-01-01T00:00:00Z"
+                  "expires": "2030-01-01T00:00:00Z",
+                  "sessionToken": "REPLACE_WITH_YOUR_SESSION_TOKEN"
                 },
                 "country": "US",
                 "seats": 1,
@@ -1282,7 +1294,7 @@
       },
       "get": {
         "summary": "查询订单列表",
-        "description": "仅返回当前账户最近 200 笔订单。可按邮箱或编号搜索，以及状态筛选。",
+        "description": "仅返回当前账户最近 200 笔订单。可按邮箱或编号搜索，以及状态筛选。 返回符合 q/status 条件的最近 200 笔订单；列表增加 price_snapshot 和 payment 白名单摘要，原字段保持兼容。上游金额与平台服务费分开，charged_amount 非空才代表已核实实收。",
         "operationId": "get_orders",
         "security": [
           {
@@ -1995,7 +2007,7 @@
       "post": {
         "operationId": "payment_check",
         "summary": "核实付款结果",
-        "description": "只读核实原订单付款结果，不重新提交银行卡或扣款。需要额外验证时停止自动付款；连续订阅请联系运营核实，不返回内部验证链接。",
+        "description": "核实并恢复原交易，不新建结账或重新提交银行卡付款。新订阅可继续原交易待批准、订阅生效及续费设置；付款已成功但后续待核实也可接续。必须仍有有效原代理会话、授权和可验证检查点；以 payment.can_check 为当前入口提示。额外验证可能需要人工处理，不返回内部验证链接。",
         "security": [
           {
             "BearerKey": []
@@ -2184,7 +2196,7 @@
         "properties": {
           "accessToken": {
             "type": "string",
-            "description": "刚获取的完整令牌；不会在响应或日志回显",
+            "description": "完整访问令牌，不在响应/日志回显；新订阅存在有效刷新凭据时允许 AT 已过期，由服务端尝试刷新。",
             "writeOnly": true
           },
           "user": {
@@ -2220,19 +2232,19 @@
           "expires": {
             "type": "string",
             "format": "date-time",
-            "description": "会话到期时间，与 Token 的 exp 取较早值"
+            "description": "会话到期时间。独立提链与 AT exp 取较早值；新订阅存在刷新凭据时用于其受理期限，不代表在线授权已验证。"
           },
           "sessionToken": {
             "type": "string",
             "writeOnly": true,
             "maxLength": 32768,
-            "description": "可选。原 Session 已包含的会话凭据可用于后台恢复授权；仅加密短期保存，不在响应中返回。无需为只有 AT 的 Session 补造此字段。"
+            "description": "新订阅必须提供此字段或受支持的会话 Cookie；独立提链可省略。只加密短期保存，不回显，不可编造。"
           },
           "cookies": {
             "type": "string",
             "writeOnly": true,
             "maxLength": 65536,
-            "description": "可选。已有的会话 Cookie 字符串；仅保留受支持的会话凭据，短期加密保存，不回显。"
+            "description": "已有的会话 Cookie 字符串；新订阅缺少 sessionToken 时必须包含受支持的会话凭据。仅保留受支持字段，短期加密，不回显。"
           }
         },
         "additionalProperties": true
@@ -2378,9 +2390,34 @@
               ]
             },
             "then": {
-              "required": [
-                "card"
-              ]
+              "properties": {
+                "session": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "sessionToken"
+                      ],
+                      "properties": {
+                        "sessionToken": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "cookies"
+                      ],
+                      "properties": {
+                        "cookies": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
             }
           }
         ]
@@ -2458,7 +2495,7 @@
           },
           "price_snapshot": {
             "$ref": "#/components/schemas/PriceSnapshot",
-            "description": "详情返回创建订单时的价格快照；旧订单为空对象，列表不返回此字段"
+            "description": "创建订单时的价格快照；旧订单为空对象。列表只返回 standard、fee、tier_code、tier_name、discount、source。"
           },
           "workflow": {
             "enum": [
@@ -2480,6 +2517,10 @@
               "review"
             ],
             "description": "not_checked 历史订单或非订阅订单未记录；pending 尚未确认生效；active 已确认生效且套餐匹配；review 已付款但生效待核实。须结合 payment.state 判断，不得重新付款。"
+          },
+          "payment": {
+            "$ref": "#/components/schemas/PaymentSummary",
+            "description": "订单列表返回当前付款摘要。付款成功不能替代 activation 与 renewal 的判断。"
           }
         },
         "required": [],
@@ -2664,7 +2705,7 @@
           },
           "payment_connected": {
             "type": "boolean",
-            "description": "站内付款开关与运行环境是否可用，不代表上游已验证成功"
+            "description": "当前订阅付款功能是否开放；新订阅使用服务端协议，不依赖旧浏览器环境，不代表真实支付已验证成功。"
           },
           "attempts": {
             "type": "integer"
@@ -2717,7 +2758,8 @@
             "description": "上游币种最小单位，JPY 为整数日元"
           },
           "currency": {
-            "type": "string"
+            "type": "string",
+            "description": "上游币种代码，当前付款响应使用小写（如 php、jpy），接入方应不区分大小写。金额采用对应最小单位，JPY 不除以 100。"
           },
           "last4": {
             "type": "string"
@@ -2750,7 +2792,7 @@
           },
           "charged_currency": {
             "type": "string",
-            "description": "实收金额币种；未取得实收金额时为空字符串。"
+            "description": "实收金额币种，当前使用小写，接入方应不区分大小写；未取得实收金额时为空字符串。"
           },
           "error_code": {
             "type": "string",
@@ -2759,8 +2801,71 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "can_check": {
+            "type": "boolean",
+            "description": "当前是否可申请核实原交易或接续付款后的办理；最终仍由接口校验状态、租约、原代理、授权及检查点。"
           }
         }
+      },
+      "PaymentSummary": {
+        "type": "object",
+        "description": "列表中的付款摘要；尚无付款或仅提链订单返回空对象。不含付款操作能力、链接、原始错误或内部诊断。",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "preparing",
+              "quoted",
+              "submitting",
+              "checking",
+              "action_required",
+              "review",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "description": "succeeded 表示付款成功，后续订阅生效和续费看 order.activation/order.renewal；review/checking/action_required 均禁止重新提交扣款。"
+          },
+          "amount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "上游币种最小单位，JPY 为整数日元"
+          },
+          "currency": {
+            "type": "string",
+            "description": "上游币种代码，当前付款响应使用小写（如 php、jpy），接入方应不区分大小写。金额采用对应最小单位，JPY 不除以 100。"
+          },
+          "charged_amount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "有明确实收证据时返回的最小币种单位金额；null 表示未取得该金额证据，不能据此判为未付款。"
+          },
+          "charged_currency": {
+            "type": "string",
+            "description": "实收金额币种，当前使用小写，接入方应不区分大小写；未取得实收金额时为空字符串。"
+          },
+          "last4": {
+            "type": "string"
+          },
+          "fee_state": {
+            "type": "string",
+            "enum": [
+              "held",
+              "released",
+              "charged"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       }
     }
   }

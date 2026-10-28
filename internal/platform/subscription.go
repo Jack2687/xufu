@@ -28,6 +28,9 @@ func (a *App) reserveSubscription(ctx context.Context, tx pgx.Tx, id, user strin
 		_, e = tx.Exec(ctx, "INSERT INTO payment_runs(order_id,attempt_id,state,last4,expires_at,hosted_url_enc) VALUES($1,$2,'preparing',$3,now()+($4*interval '1 second'),'')", id, attempt, card.Number[len(card.Number)-4:], ttl)
 	}
 	if e == nil {
+		_, e = tx.Exec(ctx, "INSERT INTO subscription_protocol(order_id,expires_at) SELECT order_id,credentials_expires_at FROM subscription_runs WHERE order_id=$1", id)
+	}
+	if e == nil {
 		e = paymentFunds(ctx, tx, id, attempt, "hold")
 	}
 	if e == nil {
@@ -40,6 +43,10 @@ func (a *App) reserveSubscription(ctx context.Context, tx pgx.Tx, id, user strin
 }
 
 func (a *App) launchSubscription(id, attempt string, card cardInput, billing M) {
+	if a.isProtocolSubscription(context.Background(), id) {
+		a.queueProtocolSubscription(id, attempt, card, billing)
+		return
+	}
 	cfg := a.config(context.Background(), "payment")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(num(cfg, "subscription_wait_seconds", 600))*time.Second)
 	session := &paymentSession{attempt: attempt, cancel: cancel, commands: make(chan paymentCommand, 1)}

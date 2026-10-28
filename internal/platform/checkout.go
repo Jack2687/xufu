@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw json.RawMessage, workspace string, premium int) error {
-	info, e := inspectSession(raw)
+func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw json.RawMessage, workspace string, premium int, refreshable bool) error {
+	info, e := inspectSessionMode(raw, refreshable)
 	if e != nil {
 		return e
 	}
@@ -240,6 +240,10 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 }
 
 func (a *App) executeCheckout(ctx context.Context, j *Job) {
+	if a.isProtocolSubscription(ctx, j.OrderID) {
+		a.executeProtocolSubscription(ctx, j)
+		return
+	}
 	started := time.Now()
 	a.paymentTrace(ctx, j.OrderID, "checkout", "running", "", 0)
 	var enc, proxyEnc string

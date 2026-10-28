@@ -14,6 +14,7 @@ import (
 )
 
 type paymentSession struct {
+	protocol *protocolCardSlot
 	commands chan paymentCommand
 	cancel   context.CancelFunc
 	attempt  string
@@ -99,6 +100,18 @@ func (a *App) paymentDetails(ctx context.Context, id string) M {
 	}
 	rows, e := a.query(ctx, "SELECT attempt_id,state,amount,currency,charged_amount,charged_currency,last4,quote_expires_at,fee_state,error_code,updated_at FROM payment_runs WHERE order_id=$1", id)
 	result := M{"enabled": a.paymentEnabled(ctx)}
+	if a.isProtocolSubscription(ctx, id) {
+		result["enabled"] = a.config(ctx, "payment")["enabled"] == true
+		var canCheck bool
+		if a.DB.QueryRow(ctx, `SELECT s.checkpoint_enc<>'' AND s.expires_at>now() AND (s.lease_until IS NULL OR s.lease_until<now())
+ AND (p.state IN ('review','action_required') OR (p.state='succeeded' AND (o.activation='review' OR o.renewal='review')))
+ AND u.renewal_state<>'delegated' AND EXISTS(SELECT 1 FROM order_proxy_sessions b JOIN resources r ON r.id=b.resource_id
+ WHERE b.order_id=s.order_id AND b.expires_at>now() AND b.endpoint_enc<>'' AND b.expected_ip<>'' AND r.enabled)
+ FROM subscription_protocol s JOIN payment_runs p ON p.order_id=s.order_id JOIN orders o ON o.id=s.order_id
+ JOIN subscription_runs u ON u.order_id=s.order_id WHERE s.order_id=$1`, id).Scan(&canCheck) == nil {
+			result["can_check"] = canCheck
+		}
+	}
 	if e == nil && len(rows) == 1 {
 		for k, v := range rows[0] {
 			result[k] = v
@@ -193,7 +206,7 @@ func (a *App) paymentAdmission(ctx context.Context, tx pgx.Tx, userID string, cf
 		return bad("队列已暂停，请稍后再试")
 	}
 	var total, own int
-	if e := tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER (WHERE o.user_id=$1) FROM payment_runs p JOIN orders o ON o.id=p.order_id WHERE p.state IN ('preparing','quoted','submitting','checking')", userID).Scan(&total, &own); e != nil {
+	if e := tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER (WHERE o.user_id=$1) FROM payment_runs p JOIN orders o ON o.id=p.order_id WHERE p.state IN ('preparing','quoted','submitting','checking') OR EXISTS(SELECT 1 FROM subscription_protocol s WHERE s.order_id=p.order_id AND s.lease_until>now())", userID).Scan(&total, &own); e != nil {
 		return e
 	}
 	if total >= num(cfg, "max_parallel", 2) || own >= num(cfg, "per_user_parallel", 1) {
@@ -578,12 +591,37 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 	if _, e = tx.Exec(ctx, "SELECT id FROM orders WHERE id=$1 FOR UPDATE", id); e != nil {
 		return e
 	}
+	if event.ProtocolLease != "" {
+		var valid bool
+		if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM subscription_protocol WHERE order_id=$1 AND lease_token=$2 AND lease_until>now())", id, event.ProtocolLease).Scan(&valid); e != nil {
+			return e
+		}
+		if !valid {
+			return ErrLeaseLost
+		}
+	} else {
+		var activeProtocol bool
+		if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM subscription_protocol WHERE order_id=$1 AND lease_until>now())", id).Scan(&activeProtocol); e != nil {
+			return e
+		}
+		if activeProtocol {
+			return ErrLeaseLost
+		}
+	}
 	var state, feeState, currency string
 	var submitted bool
 	var amount *int64
 	e = tx.QueryRow(ctx, "SELECT state,fee_state,submitted,amount,currency FROM payment_runs WHERE order_id=$1 AND attempt_id=$2 FOR UPDATE", id, attempt).Scan(&state, &feeState, &submitted, &amount, &currency)
 	if e != nil {
 		return e
+	}
+	if state == "succeeded" && event.ProtocolLease != "" && event.State == "succeeded" && event.Evidence != nil {
+		// Recovery may obtain the original intent's captured amount after payment
+		// was already confirmed. Update evidence without touching the ledger.
+		if e = a.savePaymentEvidence(ctx, tx, id, attempt, event); e != nil {
+			return e
+		}
+		return tx.Commit(ctx)
 	}
 	if state == "succeeded" || state == "failed" || state == "cancelled" {
 		return nil
@@ -599,7 +637,11 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 	if declined {
 		target = "failed"
 	}
-	if target == "succeeded" && (!submitted || amount == nil || event.Amount != *amount || event.Currency != currency) {
+	var protocol bool
+	if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM subscription_protocol WHERE order_id=$1)", id).Scan(&protocol); e != nil {
+		return e
+	}
+	if target == "succeeded" && (!submitted || amount == nil || (event.Amount != *amount && !(protocol && event.Evidence != nil)) || event.Currency != currency) {
 		target = "review"
 		code = "result_unconfirmed"
 	}
@@ -612,7 +654,7 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 			code = "preparation_failed"
 		}
 	}
-	if (target == "failed" || target == "cancelled") && ((event.Sent && !declined) || state == "checking") {
+	if (target == "failed" || target == "cancelled") && ((event.Sent && !declined) || (state == "checking" && !(protocol && declined))) {
 		target = "review"
 		code = "result_unconfirmed"
 	}
@@ -663,7 +705,7 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 		}
 		if target == "succeeded" {
 			orderState = "processing"
-			if _, e = tx.Exec(ctx, "UPDATE subscription_runs SET renewal_state='pending',next_at=now(),updated_at=now() WHERE order_id=$1 AND renewal_state='not_started'", id); e != nil {
+			if _, e = tx.Exec(ctx, "UPDATE subscription_runs SET renewal_state='pending',next_at=now(),updated_at=now() WHERE order_id=$1 AND renewal_state='not_started' AND NOT EXISTS(SELECT 1 FROM subscription_protocol WHERE order_id=$1)", id); e != nil {
 				return e
 			}
 		} else if target == "failed" || target == "cancelled" {
@@ -708,6 +750,10 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 	return tx.Commit(ctx)
 }
 func (a *App) checkPayment(w http.ResponseWriter, r *http.Request) {
+	if a.isProtocolSubscription(r.Context(), r.PathValue("id")) {
+		a.checkProtocolPayment(w, r)
+		return
+	}
 	ctx := r.Context()
 	id := r.PathValue("id")
 	cfg := a.config(ctx, "payment")
@@ -762,7 +808,10 @@ func (a *App) checkPayment(w http.ResponseWriter, r *http.Request) {
 	out(w, 202, M{"accepted": true})
 }
 func (a *App) RecoverPayments(ctx context.Context) error {
-	rows, e := a.query(ctx, "SELECT order_id,attempt_id FROM payment_runs WHERE state IN ('preparing','quoted','submitting','checking') AND expires_at<now() LIMIT 100")
+	if err := a.recoverProtocolRuns(ctx); err != nil {
+		return err
+	}
+	rows, e := a.query(ctx, "SELECT order_id,attempt_id FROM payment_runs p WHERE state IN ('preparing','quoted','submitting','checking') AND expires_at<now() AND NOT EXISTS(SELECT 1 FROM subscription_protocol s WHERE s.order_id=p.order_id) LIMIT 100")
 	if e != nil {
 		return e
 	}

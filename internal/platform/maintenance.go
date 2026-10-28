@@ -31,6 +31,9 @@ func (a *App) Maintain(ctx context.Context) error {
 	if _, e = tx.Exec(ctx, "UPDATE subscription_runs SET credentials_enc='' WHERE credentials_expires_at<now()"); e != nil {
 		return e
 	}
+	if _, e = tx.Exec(ctx, "UPDATE subscription_protocol SET checkpoint_enc='' WHERE expires_at<now() AND (lease_until IS NULL OR lease_until<now())"); e != nil {
+		return e
+	}
 	if _, e = tx.Exec(ctx, "UPDATE renewal_tasks SET credentials_enc='' WHERE credentials_expires_at<now()"); e != nil {
 		return e
 	}

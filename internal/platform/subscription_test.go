@@ -46,6 +46,43 @@ func subscriptionFixture(t *testing.T, keep bool) (*harness, string, *fakePaymen
 	}
 	expect(t, h.request("POST", "/api/orders", body, h.member, map[string]string{"Idempotency-Key": uid()}), 409)
 	h.a.DB.Exec(ctx, "UPDATE subscription_runs SET max_amount=2000 WHERE order_id=$1", id)
+	// These existing tests exercise historical Chromium orders after migration.
+	h.a.paymentMu.Lock()
+	queued := h.a.payments[id]
+	card, billing := queued.protocol.card, queued.protocol.billing
+	close(queued.protocol.done)
+	h.a.paymentMu.Unlock()
+	if _, err := h.a.DB.Exec(ctx, "DELETE FROM subscription_protocol WHERE order_id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+	var encrypted string
+	if err := h.a.DB.QueryRow(ctx, "SELECT credentials_enc FROM subscription_runs WHERE order_id=$1", id).Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := h.a.decrypt(encrypted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy checkoutInput
+	if err = json.Unmarshal([]byte(raw), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy.SessionToken, legacy.Cookies = "", ""
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err = h.a.encrypt(string(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.a.DB.Exec(ctx, "UPDATE subscription_runs SET credentials_enc=$2 WHERE order_id=$1", id, encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.a.DB.Exec(ctx, "UPDATE checkout_runs SET credentials_enc=$2 WHERE order_id=$1", id, encrypted); err != nil {
+		t.Fatal(err)
+	}
+	h.a.launchSubscription(id, queued.attempt, card, billing)
 	paymentBalances(t, h, 90000, 10000)
 	return h, id, p
 }

@@ -29,7 +29,7 @@ func (a *App) overview(w http.ResponseWriter, r *http.Request) {
 	out(w, 200, M{"user": u, "stats": stats, "recent_orders": orders, "announcements": ann})
 }
 func (a *App) orders(w http.ResponseWriter, r *http.Request) {
-	a.list(w, r, "SELECT id,product_id,product_name,email,country,seats,status,fee,source,workflow,keep_renewal,renewal,activation,created_at,updated_at FROM orders WHERE user_id=$1 AND ($2='' OR email ILIKE '%'||$2||'%' OR id ILIKE '%'||$2||'%') AND ($3='' OR status=$3) ORDER BY created_at DESC LIMIT 200", current(r).ID, r.URL.Query().Get("q"), r.URL.Query().Get("status"))
+	a.list(w, r, customerOrdersQuery, current(r).ID, r.URL.Query().Get("q"), r.URL.Query().Get("status"))
 }
 func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 	var v struct {
@@ -60,7 +60,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 		v.Prepare = true
 		v.PaymentCurrency = currencyForCountry(v.Country)
 		v.PaymentLimit = 10000000000
-		if !a.paymentEnabled(r.Context()) {
+		if a.config(r.Context(), "payment")["enabled"] != true {
 			fail(w, 409, "订阅付款暂不可用")
 			return
 		}
@@ -69,7 +69,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	sessionInfo, sessionErr := inspectSession(v.Session)
+	sessionInfo, sessionErr := inspectSessionMode(v.Session, full)
 	if sessionErr != nil {
 		fail(w, 400, sessionErr.Error())
 		return
@@ -186,7 +186,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		_, e = tx.Exec(r.Context(), "INSERT INTO order_events(order_id,stage,message) VALUES($1,'draft','订阅方案已保存；未提交付款，未收取服务费。')", id)
 		if e == nil && v.Prepare {
-			if e = a.enqueueCheckout(r.Context(), tx, id, v.Session, v.Workspace, v.PremiumSeats); e != nil {
+			if e = a.enqueueCheckout(r.Context(), tx, id, v.Session, v.Workspace, v.PremiumSeats, full); e != nil {
 				return nil, e
 			}
 			if full {
@@ -196,9 +196,9 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 				}
 				subscriptionID, subscriptionAttempt = id, attempt
 			}
-			return M{"id": id, "status": "queued", "checkout_connected": true, "payment_connected": full && a.paymentEnabled(r.Context())}, nil
+			return M{"id": id, "status": "queued", "checkout_connected": true, "payment_connected": full && a.subscriptionEnabled(r.Context())}, nil
 		}
-		return M{"id": id, "status": "draft", "payment_connected": full && a.paymentEnabled(r.Context())}, e
+		return M{"id": id, "status": "draft", "payment_connected": full && a.subscriptionEnabled(r.Context())}, e
 	})
 	if committed && subscriptionID != "" {
 		a.launchSubscription(subscriptionID, subscriptionAttempt, v.Card, subscriptionBilling)
@@ -255,7 +255,7 @@ func (a *App) cancelOrder(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) wallet(w http.ResponseWriter, r *http.Request) {
 	u := current(r)
-	ledger, e := a.query(r.Context(), "SELECT id,kind,amount,balance_after,frozen_after,description,created_at FROM ledger WHERE user_id=$1 ORDER BY id DESC LIMIT 300", u.ID)
+	ledger, e := a.query(r.Context(), customerLedgerQuery, u.ID)
 	if e != nil {
 		fail(w, 500, "读取失败")
 		return
