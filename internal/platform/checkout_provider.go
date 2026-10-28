@@ -66,6 +66,11 @@ func providerJSON(ctx context.Context, c *http.Client, method, target string, he
 	req.Header = headers.Clone()
 	res, e := c.Do(req)
 	if e != nil {
+		// The bound proxy guard rejects locally before sending the business request.
+		var guarded checkoutError
+		if errors.As(e, &guarded) && (orderRenewalProxyTerminal(guarded) || guarded.Code == "proxy_unavailable") {
+			return nil, guarded
+		}
 		details["network_reason"] = networkReason(e)
 		return nil, checkoutFailure("network", !write, write)
 	}

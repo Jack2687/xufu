@@ -73,66 +73,69 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 			if in.Email == "" {
 				in.Email = email
 			}
-			client, closeClient, err := a.openRenewalClient(ctx)
-			if err != nil {
+			client, closeClient, err := a.openOrderRenewalClient(ctx, id)
+			if waitingRenewalProxy(err) {
 				a.paymentTrace(ctx, id, "activation", "waiting", "proxy_unavailable", time.Since(startedAt))
 				a.waitRenewalProxy(ctx, id, lease, false)
 				return
 			}
-			defer closeClient()
-			auth := &providerSession{ctx: a.providerContext(ctx, id, "session_refresh"), client: client, in: &in, purpose: "activation",
-				persist: func(v checkoutInput) error { return a.saveRenewalCredentials(ctx, id, lease, v, false) },
-				trace:   func(state, code string) { a.paymentTrace(ctx, id, "session_refresh", state, code, 0) }}
-			resultErr = auth.prepare()
-			if resultErr == nil {
-				a.paymentTrace(ctx, id, "activation", "running", "", 0)
-				var snapshot subscriptionSnapshot
-				snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "activation"), auth)
-				if resultErr == nil && snapshot.Active {
-					// New orders require the purchased plan; legacy rows retain prior semantics.
-					if previousActivation != "not_checked" {
-						resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
-					}
-					if resultErr == nil {
-						activation = "active"
-						if previousActivation != "active" {
-							checks = 1
+			resultErr = err
+			if err == nil {
+				defer closeClient()
+				auth := &providerSession{ctx: a.providerContext(ctx, id, "session_refresh"), client: client, in: &in, purpose: "activation",
+					persist: func(v checkoutInput) error { return a.saveRenewalCredentials(ctx, id, lease, v, false) },
+					trace:   func(state, code string) { a.paymentTrace(ctx, id, "session_refresh", state, code, 0) }}
+				resultErr = auth.prepare()
+				if resultErr == nil {
+					a.paymentTrace(ctx, id, "activation", "running", "", 0)
+					var snapshot subscriptionSnapshot
+					snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "activation"), auth)
+					if resultErr == nil && snapshot.Active {
+						// New orders require the purchased plan; legacy rows retain prior semantics.
+						if previousActivation != "not_checked" {
+							resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
 						}
-						a.paymentTrace(ctx, id, "activation", "completed", "", time.Since(startedAt))
-						if keep {
-							state, message = "kept", "订阅已生效，按您的选择保留自动续费。"
-						} else {
-							message = "订阅已生效，正在核实自动续费设置。"
-							a.paymentTrace(ctx, id, "renewal", "running", "", 0)
-							// Cancellation is a separate authorization boundary: refresh again
-							// even when activation just recovered from a 401, then re-read.
-							auth.purpose = "renewal"
-							if in.SessionToken != "" || in.Cookies != "" {
-								resultErr = auth.refresh()
-								if resultErr == nil {
-									snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "renewal"), auth)
-								}
-								if resultErr == nil && snapshot.Active && previousActivation != "not_checked" {
-									resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
-								}
-							} else {
-								// Legacy AT-only input cannot manufacture refresh credentials.
-								resultErr = auth.prepare()
+						if resultErr == nil {
+							activation = "active"
+							if previousActivation != "active" {
+								checks = 1
 							}
-							if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && !snapshot.Renew {
-								state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
-							} else if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && snapshot.Renew && !started {
-								tag, claimErr := a.DB.Exec(ctx, "UPDATE subscription_runs SET cancel_started=true WHERE order_id=$1 AND lease_token=$2 AND NOT cancel_started AND lease_until>now()", id, lease)
-								if claimErr != nil || tag.RowsAffected() != 1 {
-									return
-								}
-								cancelRenewal(a.providerContext(ctx, id, "renewal"), client, in)
-								snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "renewal"), auth)
-								if resultErr == nil && snapshot.Active && previousActivation != "not_checked" {
-									resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
+							a.paymentTrace(ctx, id, "activation", "completed", "", time.Since(startedAt))
+							if keep {
+								state, message = "kept", "订阅已生效，按您的选择保留自动续费。"
+							} else {
+								message = "订阅已生效，正在核实自动续费设置。"
+								a.paymentTrace(ctx, id, "renewal", "running", "", 0)
+								// Cancellation is a separate authorization boundary: refresh again
+								// even when activation just recovered from a 401, then re-read.
+								auth.purpose = "renewal"
+								if in.SessionToken != "" || in.Cookies != "" {
+									resultErr = auth.refresh()
+									if resultErr == nil {
+										snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "renewal"), auth)
+									}
+									if resultErr == nil && snapshot.Active && previousActivation != "not_checked" {
+										resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
+									}
+								} else {
+									// Legacy AT-only input cannot manufacture refresh credentials.
+									resultErr = auth.prepare()
 								}
 								if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && !snapshot.Renew {
 									state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
+								} else if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && snapshot.Renew && !started {
+									tag, claimErr := a.DB.Exec(ctx, "UPDATE subscription_runs SET cancel_started=true WHERE order_id=$1 AND lease_token=$2 AND NOT cancel_started AND lease_until>now()", id, lease)
+									if claimErr != nil || tag.RowsAffected() != 1 {
+										return
+									}
+									cancelRenewal(a.providerContext(ctx, id, "renewal"), client, in)
+									snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "renewal"), auth)
+									if resultErr == nil && snapshot.Active && previousActivation != "not_checked" {
+										resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
+									}
+									if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && !snapshot.Renew {
+										state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
+									}
 								}
 							}
 						}
@@ -141,7 +144,7 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 			}
 		}
 	}
-	if resultErr != nil && (renewalAuthorizationRejected(resultErr) || providerCode(resultErr) == "account_mismatch" || providerCode(resultErr) == "plan_mismatch") {
+	if resultErr != nil && (orderRenewalProxyTerminal(resultErr) || renewalAuthorizationRejected(resultErr) || providerCode(resultErr) == "account_mismatch" || providerCode(resultErr) == "plan_mismatch") {
 		state = "review"
 	}
 	delay := num(cfg, "renewal_check_interval_seconds", 30)

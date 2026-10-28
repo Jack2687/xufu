@@ -72,7 +72,7 @@ func TestRenewalGlobalProxySelectionAndCapacity(t *testing.T) {
 	}
 }
 
-func TestRenewalWaitsForGlobalWithoutConsumingChecks(t *testing.T) {
+func TestRenewalWaitsForProxyCapacityWithoutConsumingChecks(t *testing.T) {
 	for _, mode := range []string{"standalone", "subscription"} {
 		t.Run(mode, func(t *testing.T) {
 			var h *harness
@@ -88,6 +88,10 @@ func TestRenewalWaitsForGlobalWithoutConsumingChecks(t *testing.T) {
 				waitPayment(t, h, id, "submitting")
 				p.events <- paymentEvent{Type: "result", State: "succeeded", Sent: true, Amount: 1500, Currency: "php"}
 				waitPayment(t, h, id, "succeeded")
+				if _, e := h.a.DB.Exec(context.Background(), `INSERT INTO proxy_leases(id,resource_id,expires_at)
+ SELECT x.id,s.resource_id,now()+interval '2 minutes' FROM order_proxy_sessions s CROSS JOIN (VALUES ($2::text),($3::text)) x(id) WHERE s.order_id=$1`, id, uid(), uid()); e != nil {
+					t.Fatal(e)
+				}
 			}
 			ctx := context.Background()
 			claim, run := h.a.claimRenewal, h.a.runRenewal
@@ -116,7 +120,7 @@ func TestRenewalWaitsForGlobalWithoutConsumingChecks(t *testing.T) {
 
 // Real local CONNECT/TLS transport verifies GET, cancellation POST and confirming
 // GET all traverse the selected proxy. No public upstream receives these requests.
-func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
+func TestRenewalFlowsUseTheirConfiguredProxyForEveryRequest(t *testing.T) {
 	for _, mode := range []string{"standalone", "subscription"} {
 		t.Run(mode, func(t *testing.T) {
 			var h *harness
@@ -149,11 +153,29 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 			chooseGlobal(t, h, global)
 			endpoint := "http://test-user:TEST_PROXY_SECRET@proxy.example.test:8080"
 			enc, _ := h.a.encrypt(endpoint)
-			h.a.DB.Exec(ctx, "UPDATE resources SET endpoint_enc=$2 WHERE id=$1", global, enc)
+			resource := global
+			if mode == "subscription" {
+				if err := h.a.DB.QueryRow(ctx, "SELECT resource_id FROM order_proxy_sessions WHERE order_id=$1", id).Scan(&resource); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.a.DB.Exec(ctx, "UPDATE order_proxy_sessions SET endpoint_enc=$2 WHERE order_id=$1", id, enc); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				h.a.DB.Exec(ctx, "UPDATE resources SET endpoint_enc=$2 WHERE id=$1", global, enc)
+			}
 			var writes, reads, tunnels, refreshes atomic.Int32
 			var mu sync.Mutex
 			methods := []string{}
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/json" {
+					if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" || r.Header.Get("Chatgpt-Account-Id") != "" {
+						t.Error("probe leaked account credentials")
+					}
+					w.Header().Set("Content-Type", "application/json")
+					io.WriteString(w, `{"ip":"203.0.113.2","country":"PH"}`)
+					return
+				}
 				if r.Header.Get("Proxy-Authorization") != "" || (r.URL.Path != "/api/auth/session" && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")) || r.Header.Get("Chatgpt-Account-Id") != "test-space" {
 					t.Error("incorrect header isolation")
 				}
@@ -183,7 +205,7 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 			}))
 			defer upstream.Close()
 			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != "CONNECT" || r.Host != "chatgpt.com:443" {
+				if r.Method != "CONNECT" || (r.Host != "chatgpt.com:443" && r.Host != "ipinfo.io:443") {
 					t.Error("did not use proxy CONNECT")
 				}
 				if r.Header.Get("Proxy-Authorization") != "Basic "+base64.StdEncoding.EncodeToString([]byte("test-user:TEST_PROXY_SECRET")) {
@@ -212,7 +234,7 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 			h.a.renewalProxyClient = func(selected string, timeout time.Duration) (*http.Client, func(), error) {
 				factories++
 				if selected != endpoint {
-					t.Error("wrong global proxy")
+					t.Error("wrong bound proxy")
 				}
 				c, closeClient, e := newPaymentClient(selected, timeout)
 				if e != nil {
@@ -258,7 +280,7 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 				t.Fatal(joined)
 			}
 			var leases int
-			h.a.DB.QueryRow(ctx, "SELECT count(*) FROM proxy_leases WHERE resource_id=$1", global).Scan(&leases)
+			h.a.DB.QueryRow(ctx, "SELECT count(*) FROM proxy_leases WHERE resource_id=$1", resource).Scan(&leases)
 			if leases != 0 {
 				t.Fatal("global lease not released")
 			}

@@ -16,7 +16,7 @@ onUnmounted(()=>{revision++;clearTimeout(poll);controller.abort()})
 const signal=()=>AbortSignal.any([controller.signal,AbortSignal.timeout(12000)])
 async function setGlobal(row:Row){
  if(working.value||props.busy)return;working.value=true
- try{await api('/admin/resources/'+row.id+'/global','POST',{}, {},signal());notify('已设为全局代理，后续续费处理使用此代理');emit('refresh')}catch(e){notify((e as Error).message)}finally{working.value=false}
+ try{await api('/admin/resources/'+row.id+'/global','POST',{}, {},signal());notify('已设为全局代理，续费管理菜单使用此代理');emit('refresh')}catch(e){notify((e as Error).message)}finally{working.value=false}
 }
 async function testExit(row:Row){
  if(working.value||props.busy)return;working.value=true
