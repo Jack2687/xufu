@@ -20,7 +20,7 @@ func renewalRecoveryTx(ctx context.Context, tx pgx.Tx, user, email, accountHash 
  COALESCE(s.account_hash,''),COALESCE(s.cancel_started,false),s.lease_token IS NOT NULL,COALESCE(s.renewal_task_id,'')
  FROM orders o LEFT JOIN payment_runs p ON p.order_id=o.id LEFT JOIN subscription_runs s ON s.order_id=o.id
  WHERE o.workflow='subscription' AND (o.email=$1 OR s.account_hash=$2)
- AND (o.status IN ('queued','processing','awaiting_payment','review') OR o.renewal IN ('review','retrying'))
+ AND (o.status IN ('queued','processing','awaiting_payment','review') OR o.renewal IN ('review','retrying') OR o.activation='review')
  ORDER BY o.id FOR UPDATE OF o`, email, accountHash)
 	if err != nil {
 		return result, err
@@ -71,7 +71,7 @@ func (r renewalRecovery) attach(ctx context.Context, tx pgx.Tx, taskID, accountH
 		return err
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO order_events(order_id,stage,message)
- SELECT unnest($1::text[]),'renewal','订阅已成功，已转入续费管理继续处理；不会再次付款或收取服务费。'`, r.orders)
+ SELECT unnest($1::text[]),'renewal','付款已成功，已转入续费管理继续核实；不会再次付款或收取服务费。'`, r.orders)
 	return err
 }
 
@@ -79,7 +79,7 @@ func syncRenewalRecoveryTx(ctx context.Context, tx pgx.Tx, taskID, state string)
 	if state != "disabled" && state != "review" && state != "no_subscription" {
 		return nil
 	}
-	renewal, message := "review", "订阅成功，取消自动续费失败。请在续费管理更新 Session 继续核实，无需重新付款。"
+	renewal, message := "review", "付款已成功，取消自动续费暂未确认。请在续费管理更新 Session 继续核实，无需重新付款。"
 	if state == "disabled" {
 		renewal, message = "disabled", "已通过续费管理确认自动续费关闭，当前订阅有效期保留。"
 	} else if state == "no_subscription" {
@@ -91,8 +91,38 @@ func syncRenewalRecoveryTx(ctx context.Context, tx pgx.Tx, taskID, state string)
  UPDATE subscription_runs s SET renewal_state=$2,cancel_started=s.cancel_started OR t.cancel_started,updated_at=now()
  FROM renewal_tasks t WHERE s.renewal_task_id=t.id AND t.id=$1 RETURNING s.order_id
 ), orders_changed AS (
- UPDATE orders SET status='succeeded',renewal=$2,updated_at=now() WHERE id IN (SELECT order_id FROM changed) RETURNING id
+ UPDATE orders SET status='succeeded',renewal=$2,activation=CASE WHEN $2='disabled' THEN 'active' ELSE activation END,updated_at=now() WHERE id IN (SELECT order_id FROM changed) RETURNING id
 )
 INSERT INTO order_events(order_id,stage,message) SELECT id,'renewal',$3 FROM orders_changed`, taskID, renewal, message)
 	return err
+}
+
+// A delegated cancellation must verify the purchased plan before it can also
+// resolve a paid order's activation warning. Never infer the plan from payment.
+func (a *App) checkRecoveryPlan(ctx context.Context, taskID string, auth *providerSession, snapshot subscriptionSnapshot) error {
+	rows, err := a.DB.Query(ctx, `SELECT o.product_id FROM subscription_runs s JOIN orders o ON o.id=s.order_id
+ WHERE s.renewal_task_id=$1 AND o.activation<>'not_checked'`, taskID)
+	if err != nil {
+		return err
+	}
+	var products []string
+	for rows.Next() {
+		var product string
+		if err = rows.Scan(&product); err != nil {
+			rows.Close()
+			return err
+		}
+		products = append(products, product)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, product := range products {
+		if err = verifySubscriptionPlan(ctx, auth, snapshot, product); err != nil {
+			return err
+		}
+	}
+	return nil
 }

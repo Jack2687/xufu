@@ -28,21 +28,26 @@ export function snapshot(body, id) {
   // Hosted payment_pages responses identify the page with ppage_ and bind it
   // to the checkout through session_id. Never compare the page ID to cs_.
   if (!body || body.object !== 'checkout.session' || body.session_id !== id || typeof body.id !== 'string' || !/^ppage_[a-zA-Z0-9]+$/.test(body.id)) return null
-  const amount = body.total_summary?.due, currency = body.currency
+  const intent=body.payment_intent&&typeof body.payment_intent==='object'?body.payment_intent:null
+  const intentID=typeof intent?.id==='string'&&/^pi_[A-Za-z0-9]+$/.test(intent.id)?intent.id:''
+  if(intent?.currency&&intent.currency!==body.currency)return null
+  const received=intentID&&intent.status==='succeeded'&&Number.isSafeInteger(intent.amount_received)&&intent.amount_received>0?intent.amount_received:null
+  const amount = received??body.total_summary?.due, currency = body.currency
   if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 10000000000 || !currencies.has(currency)) return null
-  const paid = body.payment_status === 'paid' && body.status === 'complete' && body.state === 'succeeded' && (!body.payment_intent || body.payment_intent.status === 'succeeded')
+  const paid = (received!==null)||(body.payment_status === 'paid' && body.status === 'complete' && body.state === 'succeeded' && (!intent || intent.status === 'succeeded'))
   const taxReady = body.tax_context?.automatic_tax_enabled === false || body.tax_meta?.status === 'complete'
-  return {amount,currency,paid,taxReady,open:body.status==='open'&&body.payment_status==='unpaid',action:body.payment_intent?.status==='requires_action'}
+  return {amount,currency,paid,taxReady,open:body.status==='open'&&body.payment_status==='unpaid',action:intent?.status==='requires_action',authorized:intent?.status==='requires_capture',evidence:{checkout_id:id,payment_intent_id:intentID,status:paid?'succeeded':intent?.status==='requires_capture'?'authorized':intent?.status==='requires_action'?'action_required':'pending',amount_received:received,currency}}
 }
 export function confirmMatches(url, form, id, quote) {
   return new URL(url).hostname==='api.stripe.com' && new URL(url).pathname===`/v1/payment_pages/${id}/confirm` && form.get('expected_amount')===String(quote.amount)
 }
 const pause = ms=>new Promise(r=>setTimeout(r,ms))
+const safePaymentCodes=new Set(['card_declined','expired_card','incorrect_cvc','incorrect_number','incorrect_zip','insufficient_funds','do_not_honor','generic_decline','authentication_required','payment_intent_authentication_failure','processing_error','billing_automatic_tax_unrecognized_customer_location'])
 
 export async function run(input, commands, emit, dependencies={}) {
   let browser, sent=false, permit=false, latest=null, changedAt=0, quote=null, blocked='', responseCount=0, declined=false, networkFailed=false
   const stage = code=>emit({type:'stage',code})
-  const done = (state,code='')=>emit({type:'result',state,code,sent,amount:latest?.amount||0,currency:latest?.currency||''})
+  const done = (state,code='')=>emit({type:'result',state,code,sent,amount:latest?.amount||0,currency:latest?.currency||'',evidence:latest?.evidence})
   let quoteTimer
   const abort=()=>{browser?.close().catch(()=>{})}
   dependencies.signal?.addEventListener('abort',abort,{once:true})
@@ -84,8 +89,16 @@ export async function run(input, commands, emit, dependencies={}) {
     page.on('requestfailed',req=>{if(['api.stripe.com','js.stripe.com'].includes(new URL(req.url()).hostname)&&/TUNNEL|PROXY_CONNECTION/.test(req.failure()?.errorText||''))networkFailed=true})
     page.on('response',async res=>{
       const u=new URL(res.url())
-      if(u.hostname!=='api.stripe.com'||!u.pathname.startsWith(`/v1/payment_pages/${id}`)) return
+      if(u.hostname!=='api.stripe.com')return
+      const related=u.pathname.startsWith(`/v1/payment_pages/${id}`)
+      if(!related&&u.pathname!=='/v1/payment_methods')return
       const body=await res.json().catch(()=>null)
+      const headers=res.headers(),requestID=headers['request-id']||headers['x-request-id']||''
+      const details={response_kind:body?'json':'other'}
+      for(const key of ['code','decline_code'])if(safePaymentCodes.has(body?.error?.[key]))details[key==='code'?'provider_code':key]=body.error[key]
+      const timing=res.request().timing(),elapsed=Number.isFinite(timing.responseEnd)&&timing.responseEnd>=0?Math.round(timing.responseEnd):0
+      emit({type:'diagnostic',phase:u.pathname.endsWith('/confirm')?'confirming':quote?'checking':'pricing',http_status:res.status(),request_id:/^req_[A-Za-z0-9]{8,80}$/.test(requestID)?requestID:'',code:res.status()>=400?'request_rejected':'',elapsed_ms:elapsed,diagnostics:details})
+      if(!related)return
       if(u.pathname===`/v1/payment_pages/${id}/confirm`&&res.status()===402&&body?.error?.type==='card_error'&&['card_declined','expired_card','incorrect_cvc','incorrect_number'].includes(body.error.code)&&(!body.error.payment_intent||body.error.payment_intent.status==='requires_payment_method'))declined=true
       if(res.status()!==200)return
       const s=snapshot(body,id)
@@ -160,13 +173,14 @@ export async function run(input, commands, emit, dependencies={}) {
       if(declined) return done('declined','payment_declined')
       if(blocked) return done(sent?'review':'failed',blocked)
       if(latest?.action) return done('action_required','verification_required')
+      if(latest?.authorized) return done('review','payment_authorized')
       await pause(300)
     }
     // Even an apparently empty response after clicking may have caused a charge.
     return done(sent?'review':'failed',sent?'result_unconfirmed':'verification_required')
   } catch (e) {
     // Never propagate exception strings: Playwright often includes filled values.
-    const safeCodes=new Set(['unsupported_checkout','quote_unavailable','proxy_session_unavailable','proxy_session_expired','proxy_session_changed'])
+    const safeCodes=new Set(['unsupported_checkout','quote_unavailable','checkout_fields_unavailable','proxy_session_unavailable','proxy_session_expired','proxy_session_changed'])
     return done(sent?'review':'failed',sent?'result_unconfirmed':safeCodes.has(blocked)?blocked:networkFailed?'network_connection_failed':safeCodes.has(e.message)?e.message:'preparation_failed')
   } finally {
     clearTimeout(quoteTimer)

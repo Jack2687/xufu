@@ -34,7 +34,7 @@ func validateConfig(key string, v M) error {
 		"scheduler": {"paused", "max_parallel", "per_user_parallel", "retry_limit", "retry_delay_seconds", "task_timeout_seconds", "queue_limit", "default_country", "link_mode", "engine"},
 		"billing":   {"country", "allow_customer_edit", "address_templates"}, "tiers": {"items"},
 		"proxy":   {"default_id", "global_id", "match_country", "request_timeout_seconds"},
-		"payment": {"enabled", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit", "network_restart_limit"},
+		"payment": {"enabled", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit", "network_restart_limit", "activation_check_interval_seconds", "activation_check_limit"},
 	}
 	keys, ok := allowed[key]
 	if !ok {
@@ -85,7 +85,7 @@ func validateConfig(key string, v M) error {
 		if e := boolean("enabled"); e != nil {
 			return e
 		}
-		for k, b := range map[string][2]int{"max_parallel": {1, 20}, "per_user_parallel": {1, 5}, "prepare_timeout_seconds": {30, 300}, "quote_timeout_seconds": {30, 600}, "result_timeout_seconds": {30, 600}, "requests_per_minute": {1, 20}, "subscription_wait_seconds": {30, 1800}, "renewal_check_interval_seconds": {5, 300}, "renewal_check_limit": {1, 60}, "network_restart_limit": {0, 5}} {
+		for k, b := range map[string][2]int{"max_parallel": {1, 20}, "per_user_parallel": {1, 5}, "prepare_timeout_seconds": {30, 300}, "quote_timeout_seconds": {30, 600}, "result_timeout_seconds": {30, 600}, "requests_per_minute": {1, 20}, "subscription_wait_seconds": {30, 1800}, "renewal_check_interval_seconds": {5, 300}, "renewal_check_limit": {1, 60}, "network_restart_limit": {0, 5}, "activation_check_interval_seconds": {2, 300}, "activation_check_limit": {1, 120}} {
 			if k == "network_restart_limit" {
 				if _, exists := v[k]; !exists {
 					continue

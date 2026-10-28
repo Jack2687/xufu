@@ -98,12 +98,12 @@ func TestStandaloneRenewalOutcomes(t *testing.T) {
 			switch mode {
 			case "no_subscription":
 				want = "no_subscription"
-			case "unknown_write", "read_error", "mismatch":
+			case "unknown_write", "read_error":
 				standaloneStatus(t, h, id, "checking")
 				h.a.DB.Exec(ctx, "UPDATE renewal_tasks SET next_at=now() WHERE id=$1", id)
 				runStandalone(t, h, id)
 				want = "review"
-			case "expired":
+			case "expired", "mismatch":
 				want = "review"
 			}
 			standaloneStatus(t, h, id, want)

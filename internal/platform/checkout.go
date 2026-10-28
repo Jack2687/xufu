@@ -18,15 +18,9 @@ func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw jso
 	if time.Until(info.ExpiresAt) < time.Minute {
 		return bad("Session 即将过期，请重新获取")
 	}
-	var quoted string
-	if json.Unmarshal(raw, &quoted) == nil {
-		raw = []byte(quoted)
-	}
-	var s struct {
-		AccessToken string `json:"accessToken"`
-	}
-	if json.Unmarshal(raw, &s) != nil {
-		return bad("Session 无效")
+	credentials, deadline, e := sessionCredentials(raw, info)
+	if e != nil {
+		return e
 	}
 	workspace = strings.TrimSpace(workspace)
 	if workspace == "" {
@@ -53,12 +47,12 @@ func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw jso
 	if n >= num(cfg, "queue_limit", 500) {
 		return businessError{429, "准备队列已满，请稍后再试"}
 	}
-	minimal, _ := json.Marshal(checkoutInput{AccessToken: s.AccessToken, AccountID: info.AccountID})
+	minimal, _ := json.Marshal(credentials)
 	encrypted, e := a.encrypt(string(minimal))
 	if e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, "INSERT INTO checkout_runs(order_id,credentials_enc,credentials_expires_at,workspace_name,premium_seats) VALUES($1,$2,$3,$4,$5)", id, encrypted, info.ExpiresAt, workspace, premium); e != nil {
+	if _, e = tx.Exec(ctx, "INSERT INTO checkout_runs(order_id,credentials_enc,credentials_expires_at,workspace_name,premium_seats) VALUES($1,$2,$3,$4,$5)", id, encrypted, deadline, workspace, premium); e != nil {
 		return e
 	}
 	var userID string
@@ -281,6 +275,11 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 		return
 	}
 	in.AccessToken, in.AccountID = credentials.AccessToken, credentials.AccountID
+	in.SessionToken, in.Cookies, in.Email = credentials.SessionToken, credentials.Cookies, credentials.Email
+	in.TokenExpiresAt, in.RefreshedAt, in.RefreshPurpose = credentials.TokenExpiresAt, credentials.RefreshedAt, credentials.RefreshPurpose
+	if in.Email == "" {
+		a.DB.QueryRow(ctx, "SELECT email FROM orders WHERE id=$1", j.OrderID).Scan(&in.Email)
+	}
 	in.ObserveIP = func(ip string) error {
 		err := a.recordOrderProxyIP(ctx, j, ip)
 		if err == nil {
@@ -326,7 +325,23 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 			}
 		}
 	}()
-	result, cause := generateCheckout(task, client, in, func() error { return a.BeforeSideEffect(task, j) })
+	in.BeforeCreate = func(candidate *checkoutInput) error {
+		s := &providerSession{ctx: a.providerContext(task, j.OrderID, "session_refresh"), client: client, in: candidate, purpose: "checkout",
+			persist: func(v checkoutInput) error { return a.saveCheckoutCredentials(task, j, v) },
+			trace:   func(state, code string) { a.paymentTrace(task, j.OrderID, "session_refresh", state, code, 0) }}
+		if e := s.prepare(); e != nil {
+			return e
+		}
+		a.paymentTrace(task, j.OrderID, "account_check", "running", "", 0)
+		e := checkAccountForCheckout(a.providerContext(task, j.OrderID, "account_check"), s)
+		state := "completed"
+		if e != nil {
+			state = "failed"
+		}
+		a.paymentTrace(task, j.OrderID, "account_check", state, providerCode(e), 0)
+		return e
+	}
+	result, cause := generateCheckout(a.providerContext(task, j.OrderID, "checkout"), client, in, func() error { return a.BeforeSideEffect(task, j) })
 	cancel()
 	<-heartbeatDone
 	// Finalization gets its own short context even when the request timed out.

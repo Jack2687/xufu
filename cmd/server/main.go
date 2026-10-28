@@ -28,6 +28,7 @@ func main() {
 	go app.RunPayments(ctx)
 	go app.RunRenewals(ctx)
 	go app.RunProxyChecks(ctx)
+	go app.RunProviderDiagnostics(ctx)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "18860"

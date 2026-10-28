@@ -70,9 +70,9 @@ func TestRenewalRecoveryPreservesPaymentAndWriteFence(t *testing.T) {
 						writes++
 						closed = true
 					}
-					body := `{"is_active":true,"will_renew":true}`
+					body := `{"is_active":true,"plan_type":"premium","will_renew":true}`
 					if closed {
-						body = `{"is_active":true,"will_renew":false}`
+						body = `{"is_active":true,"plan_type":"premium","will_renew":false}`
 					}
 					return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
 				})}

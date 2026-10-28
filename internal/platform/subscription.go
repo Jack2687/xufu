@@ -19,10 +19,10 @@ func (a *App) reserveSubscription(ctx context.Context, tx pgx.Tx, id, user strin
 	}
 	attempt := uid()
 	ttl := num(cfg, "subscription_wait_seconds", 600) + num(cfg, "prepare_timeout_seconds", 120) + num(cfg, "result_timeout_seconds", 120) + 60
-	_, e := tx.Exec(ctx, "UPDATE orders SET workflow='subscription',keep_renewal=$2,renewal=CASE WHEN $2 THEN 'kept' ELSE 'pending' END WHERE id=$1", id, keep)
+	_, e := tx.Exec(ctx, "UPDATE orders SET workflow='subscription',activation='pending',keep_renewal=$2,renewal=CASE WHEN $2 THEN 'kept' ELSE 'pending' END WHERE id=$1", id, keep)
 	if e == nil {
 		_, e = tx.Exec(ctx, `INSERT INTO subscription_runs(order_id,max_amount,currency,credentials_enc,credentials_expires_at,account_hash)
- SELECT order_id,$2,$3,CASE WHEN $4 THEN '' ELSE credentials_enc END,LEAST(credentials_expires_at,now()+interval '24 hours'),$5 FROM checkout_runs WHERE order_id=$1`, id, limit, currency, keep, accountHash)
+ SELECT order_id,$2,$3,credentials_enc,LEAST(credentials_expires_at,now()+interval '24 hours'),$4 FROM checkout_runs WHERE order_id=$1`, id, limit, currency, accountHash)
 	}
 	if e == nil {
 		_, e = tx.Exec(ctx, "INSERT INTO payment_runs(order_id,attempt_id,state,last4,expires_at,hosted_url_enc) VALUES($1,$2,'preparing',$3,now()+($4*interval '1 second'),'')", id, attempt, card.Number[len(card.Number)-4:], ttl)

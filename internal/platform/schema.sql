@@ -146,6 +146,14 @@ CREATE TABLE IF NOT EXISTS payment_trace_events (
  elapsed_ms bigint NOT NULL DEFAULT 0,created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS payment_trace_order ON payment_trace_events(order_id,id);
+ALTER TABLE payment_trace_events ADD COLUMN IF NOT EXISTS http_status int NOT NULL DEFAULT 0;
+ALTER TABLE payment_trace_events ADD COLUMN IF NOT EXISTS request_id text NOT NULL DEFAULT '';
+ALTER TABLE payment_trace_events ADD COLUMN IF NOT EXISTS diagnostics jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS activation text NOT NULL DEFAULT 'not_checked';
+ALTER TABLE subscription_runs ADD COLUMN IF NOT EXISTS activation_checks int NOT NULL DEFAULT 0;
+ALTER TABLE payment_runs ADD COLUMN IF NOT EXISTS payment_evidence_enc text NOT NULL DEFAULT '';
+ALTER TABLE payment_runs ADD COLUMN IF NOT EXISTS charged_amount bigint;
+ALTER TABLE payment_runs ADD COLUMN IF NOT EXISTS charged_currency text NOT NULL DEFAULT '';
 
 -- Checkout history is encrypted and only projected to administrator order details.
 CREATE TABLE IF NOT EXISTS order_checkout_links (

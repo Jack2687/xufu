@@ -36,12 +36,25 @@ type paymentInput struct {
 	Currency       string             `json:"-"`
 }
 type paymentEvent struct {
-	Type     string `json:"type"`
-	State    string `json:"state"`
-	Code     string `json:"code"`
-	Sent     bool   `json:"sent"`
-	Amount   int64  `json:"amount"`
-	Currency string `json:"currency"`
+	Phase       string           `json:"phase,omitempty"`
+	HTTPStatus  int              `json:"http_status,omitempty"`
+	RequestID   string           `json:"request_id,omitempty"`
+	ElapsedMS   int64            `json:"elapsed_ms,omitempty"`
+	Diagnostics M                `json:"diagnostics,omitempty"`
+	Evidence    *paymentEvidence `json:"evidence,omitempty"`
+	Type        string           `json:"type"`
+	State       string           `json:"state"`
+	Code        string           `json:"code"`
+	Sent        bool             `json:"sent"`
+	Amount      int64            `json:"amount"`
+	Currency    string           `json:"currency"`
+}
+type paymentEvidence struct {
+	CheckoutID     string `json:"checkout_id"`
+	IntentID       string `json:"payment_intent_id"`
+	Status         string `json:"status"`
+	AmountReceived *int64 `json:"amount_received"`
+	Currency       string `json:"currency"`
 }
 type paymentCommand struct {
 	Type string `json:"type"`

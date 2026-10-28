@@ -9,7 +9,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // These operations reproduce generator.py's hosted/custom checkout requests.
@@ -20,9 +23,16 @@ const iosCheckoutUA = "ChatGPT/1.2026.196 (iOS 18.5; iPhone17,2; build 268219162
 const webCheckoutUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 
 type checkoutInput struct {
-	ObserveIP                         func(string) error `json:"-"`
-	AccessToken                       string             `json:"access_token"`
-	AccountID                         string             `json:"account_id"`
+	BeforeCreate                      func(*checkoutInput) error `json:"-"`
+	ObserveIP                         func(string) error         `json:"-"`
+	AccessToken                       string                     `json:"access_token"`
+	AccountID                         string                     `json:"account_id"`
+	Email                             string                     `json:"email,omitempty"`
+	SessionToken                      string                     `json:"session_token,omitempty"`
+	Cookies                           string                     `json:"cookies,omitempty"`
+	TokenExpiresAt                    time.Time                  `json:"token_expires_at,omitempty"`
+	RefreshedAt                       time.Time                  `json:"refreshed_at,omitempty"`
+	RefreshPurpose                    string                     `json:"refresh_purpose,omitempty"`
 	Product, Country, Mode, Workspace string
 	Seats, PremiumSeats               int
 }
@@ -34,10 +44,21 @@ type checkoutError struct {
 
 func (e checkoutError) Error() string { return e.Code }
 func checkoutFailure(code string, retry, unknown bool) error {
-	return checkoutError{code, retry, unknown}
+	return checkoutError{Code: code, Retry: retry, Unknown: unknown}
 }
 
-func providerJSON(ctx context.Context, c *http.Client, method, target string, headers http.Header, body []byte, write bool) (M, error) {
+func providerJSON(ctx context.Context, c *http.Client, method, target string, headers http.Header, body []byte, write bool) (value M, failure error) {
+	started := time.Now()
+	var status int
+	var requestID string
+	ctx, timings := requestTimings(ctx)
+	details := M{}
+	defer func() {
+		for k, v := range timings() {
+			details[k] = v
+		}
+		reportProvider(ctx, status, requestID, failure, time.Since(started), details)
+	}()
 	req, e := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
 	if e != nil {
 		return nil, checkoutFailure("invalid_request", false, false)
@@ -45,12 +66,33 @@ func providerJSON(ctx context.Context, c *http.Client, method, target string, he
 	req.Header = headers.Clone()
 	res, e := c.Do(req)
 	if e != nil {
+		details["network_reason"] = networkReason(e)
 		return nil, checkoutFailure("network", !write, write)
 	}
 	defer res.Body.Close()
+	status, requestID = res.StatusCode, res.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = res.Header.Get("Request-Id")
+	}
 	data, e := io.ReadAll(io.LimitReader(res.Body, 1<<20+1))
 	if e != nil || len(data) > 1<<20 {
 		return nil, checkoutFailure("invalid_response", !write, write)
+	}
+	details["response_kind"] = "other"
+	if len(data) == 0 {
+		details["response_kind"] = "empty"
+	} else if strings.Contains(res.Header.Get("Content-Type"), "text/html") {
+		details["response_kind"] = "html"
+	}
+	var diagnostic M
+	if json.Unmarshal(data, &diagnostic) == nil {
+		details["response_kind"] = "json"
+		node, _ := diagnostic["error"].(map[string]any)
+		if node == nil {
+			node, _ = diagnostic["detail"].(map[string]any)
+		}
+		details["provider_code"] = str(node, "code")
+		details["decline_code"] = str(node, "decline_code")
 	}
 	if res.StatusCode == 401 {
 		return nil, checkoutFailure("invalid_session", false, false)
@@ -59,6 +101,19 @@ func providerJSON(ctx context.Context, c *http.Client, method, target string, he
 		return nil, checkoutFailure("access_denied", false, false)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		if res.StatusCode == 404 {
+			var missing struct {
+				Detail struct {
+					Code string `json:"code"`
+				} `json:"detail"`
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(data, &missing) == nil && (missing.Detail.Code == "subscription_not_found" || missing.Error.Code == "subscription_not_found") {
+				return nil, checkoutFailure("subscription_not_found", true, false)
+			}
+		}
 		if res.StatusCode >= 500 {
 			return nil, checkoutFailure("upstream_unavailable", !write, write)
 		}
@@ -156,6 +211,11 @@ func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, bef
 			return out, e
 		}
 	}
+	if in.BeforeCreate != nil {
+		if e = in.BeforeCreate(&in); e != nil {
+			return out, e
+		}
+	}
 	headers := http.Header{"Authorization": {"Bearer " + in.AccessToken}, "Accept": {"application/json"}, "Content-Type": {"application/json"}}
 	if in.Mode == "long" {
 		headers.Set("User-Agent", iosCheckoutUA)
@@ -211,6 +271,10 @@ func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, bef
 		}
 	}
 	if !validCheckoutURL(out.URL) || strings.Contains(out.URL, in.AccessToken) {
+		return checkoutOutput{}, checkoutFailure("checkout_result_unknown", false, true)
+	}
+	u, _ := url.Parse(out.URL)
+	if path.Base(u.Path) != cs || !regexp.MustCompile(`^(?:cs_(?:live|test)_|oaics_)[A-Za-z0-9]+$`).MatchString(cs) {
 		return checkoutOutput{}, checkoutFailure("checkout_result_unknown", false, true)
 	}
 	return out, nil

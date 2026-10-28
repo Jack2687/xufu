@@ -103,12 +103,25 @@ func TestSubscriptionFullFlowAndRenewalChoice(t *testing.T) {
 			var status, renewal string
 			h.a.DB.QueryRow(context.Background(), "SELECT status,renewal FROM orders WHERE id=$1", id).Scan(&status, &renewal)
 			if keep {
-				if status != "succeeded" || renewal != "kept" {
-					t.Fatal("keep choice not respected")
+				if status != "processing" || renewal != "kept" {
+					t.Fatal("keep must still verify activation", status, renewal)
 				}
-				next, _, e := h.a.claimRenewal(context.Background())
-				if e != nil || next != "" {
-					t.Fatal("keep unexpectedly enqueued cancel")
+				h.a.renewalClient = func() *http.Client {
+					return &http.Client{Transport: testRoundTrip(func(r *http.Request) (*http.Response, error) {
+						if r.Method != "GET" {
+							t.Fatal("keep must never cancel")
+						}
+						return providerResponse(200, M{"is_active": true, "will_renew": true, "plan_type": "premium"}), nil
+					})}
+				}
+				next, lease, e := h.a.claimRenewal(context.Background())
+				if e != nil || next != id {
+					t.Fatal("activation task missing", e)
+				}
+				h.a.runRenewal(context.Background(), id, lease)
+				h.a.DB.QueryRow(context.Background(), "SELECT status,renewal FROM orders WHERE id=$1", id).Scan(&status, &renewal)
+				if status != "succeeded" || renewal != "kept" {
+					t.Fatal("keep activation did not finish", status, renewal)
 				}
 			} else {
 				if status != "processing" {
@@ -136,9 +149,9 @@ func TestSubscriptionFullFlowAndRenewalChoice(t *testing.T) {
 								t.Error("missing account query")
 							}
 							if writes == 0 {
-								body = `{"id":"subscription-id","is_active":true,"will_renew":true}`
+								body = `{"id":"subscription-id","is_active":true,"plan_type":"premium","will_renew":true}`
 							} else {
-								body = `{"id":"subscription-id","is_active":true,"will_renew":false}`
+								body = `{"id":"subscription-id","is_active":true,"plan_type":"premium","will_renew":false}`
 							}
 						}
 						return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
@@ -209,7 +222,7 @@ func TestRenewalUnknownWriteNeverReplayed(t *testing.T) {
 				writes++
 				return nil, errors.New("PRIVATE_UPSTREAM_ERROR")
 			}
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"is_active":true,"will_renew":true}`)), Header: http.Header{}}, nil
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"is_active":true,"plan_type":"premium","will_renew":true}`)), Header: http.Header{}}, nil
 		})}
 	}
 	for i := 0; i < 2; i++ {

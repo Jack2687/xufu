@@ -62,24 +62,18 @@ func (a *App) createRenewalTask(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "提交过于频繁，请稍后再试")
 		return
 	}
-	var quoted string
-	if json.Unmarshal(v.Session, &quoted) == nil {
-		v.Session = []byte(quoted)
-	}
-	var s struct {
-		AccessToken string `json:"accessToken"`
-	}
-	if json.Unmarshal(v.Session, &s) != nil {
-		fail(w, 400, "Session 格式不正确")
+	credentials, deadline, e := sessionCredentials(v.Session, info)
+	if e != nil {
+		fail(w, 400, e.Error())
 		return
 	}
-	raw, _ := json.Marshal(checkoutInput{AccessToken: s.AccessToken, AccountID: info.AccountID})
+	raw, _ := json.Marshal(credentials)
 	enc, e := a.encrypt(string(raw))
 	if e != nil {
 		fail(w, 500, "暂时无法受理，请稍后重试")
 		return
 	}
-	expiry := info.ExpiresAt
+	expiry := deadline
 	if cap := time.Now().Add(24 * time.Hour); expiry.After(cap) {
 		expiry = cap
 	}
@@ -232,14 +226,32 @@ func (a *App) runStandaloneRenewal(ctx context.Context, id, lease string) {
 				return
 			}
 			defer closeClient()
-			active, renew, err := renewalStatus(ctx, client, in)
+			if in.Email == "" {
+				a.DB.QueryRow(ctx, "SELECT email FROM renewal_tasks WHERE id=$1", id).Scan(&in.Email)
+			}
+			auth := &providerSession{ctx: ctx, client: client, in: &in, purpose: "renewal", persist: func(v checkoutInput) error { return a.saveRenewalCredentials(ctx, id, lease, v, true) }}
+			authErr := auth.prepare()
+			status := func() (bool, bool, error) {
+				if authErr != nil {
+					return false, false, authErr
+				}
+				snapshot, e := readSubscription(ctx, auth)
+				if e == nil && snapshot.Active {
+					e = a.checkRecoveryPlan(ctx, id, auth, snapshot)
+					if e == nil && !snapshot.RenewalKnown {
+						e = checkoutFailure("invalid_response", true, false)
+					}
+				}
+				return snapshot.Active, snapshot.Renew, e
+			}
+			active, renew, err := status()
 			if err == nil && active && renew && !started {
 				tag, e := a.DB.Exec(ctx, "UPDATE renewal_tasks SET cancel_started=true,status='checking',message='正在确认关闭结果。',updated_at=now() WHERE id=$1 AND lease_token=$2 AND NOT cancel_started AND lease_until>now()", id, lease)
 				if e != nil || tag.RowsAffected() != 1 {
 					return
 				}
 				cancelRenewal(ctx, client, in)
-				active, renew, err = renewalStatus(ctx, client, in)
+				active, renew, err = status()
 			}
 			if err == nil && !renew {
 				if active {
@@ -248,8 +260,11 @@ func (a *App) runStandaloneRenewal(ctx context.Context, id, lease string) {
 					state, message = "no_subscription", "未发现需要续费的有效订阅，无需关闭。"
 				}
 			}
-			if renewalAuthorizationRejected(err) {
+			if renewalAuthorizationRejected(err) || providerCode(err) == "account_mismatch" {
 				state, message = "review", standaloneRenewalAuthorizationMessage
+			}
+			if providerCode(err) == "plan_mismatch" {
+				state, message = "review", "查询到的订阅与原订单不一致，请联系运营核实；不会再次付款。"
 			}
 			in = checkoutInput{}
 			raw = ""
@@ -270,7 +285,7 @@ func (a *App) runStandaloneRenewal(ctx context.Context, id, lease string) {
 		return
 	}
 	tag, e := tx.Exec(save, `UPDATE renewal_tasks SET status=$3,message=$4,credentials_enc=CASE WHEN $3 IN ('disabled','no_subscription','review') THEN '' ELSE credentials_enc END,
- next_at=now()+($5*interval '1 second'),lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2`, id, lease, state, message, num(cfg, "renewal_check_interval_seconds", 30))
+ next_at=now()+($5*interval '1 second'),lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2 AND lease_until>now()`, id, lease, state, message, num(cfg, "renewal_check_interval_seconds", 30))
 	if e != nil || tag.RowsAffected() != 1 {
 		return
 	}
@@ -284,7 +299,8 @@ func (a *App) runStandaloneRenewal(ctx context.Context, id, lease string) {
 }
 
 func cancelRenewal(ctx context.Context, client *http.Client, in checkoutInput) {
-	h := http.Header{"Authorization": {"Bearer " + in.AccessToken}, "Chatgpt-Account-Id": {in.AccountID}, "Content-Type": {"application/json"}, "Accept": {"application/json"}, "User-Agent": {webCheckoutUA}, "Origin": {"https://chatgpt.com"}, "Referer": {"https://chatgpt.com/"}}
+	h := providerHeaders(in)
+	h.Set("Content-Type", "application/json")
 	payload, _ := json.Marshal(M{"account_id": in.AccountID})
 	providerJSON(ctx, client, "POST", subscriptionEndpoint+"/cancel", h, payload, true)
 }

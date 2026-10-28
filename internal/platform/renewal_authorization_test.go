@@ -41,7 +41,7 @@ func TestRenewalRejectedAuthorizationStopsWithoutReplaying(t *testing.T) {
 						} else {
 							reads++
 							if afterWrite && writes == 0 {
-								status, body = 200, `{"is_active":true,"will_renew":true}`
+								status, body = 200, `{"is_active":true,"plan_type":"premium","will_renew":true}`
 							}
 						}
 						return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil

@@ -20,6 +20,8 @@ type paymentSession struct {
 }
 
 var paymentMessages = map[string]string{
+	"checkout_fields_unavailable":     "官方付款页面字段尚未就绪，未继续提交付款。",
+	"payment_authorized":              "付款已授权，实际扣款尚未确认；系统不会再次提交付款。",
 	"payment_limit_exceeded":          "付款报价金额或币种异常，未提交付款，服务费已解冻。",
 	"subscription_preparation_failed": "订阅准备未完成或等待超时，未提交付款，服务费已解冻。",
 	"payment_declined":                "付款方式被明确拒绝，本次服务费已解冻，请核对银行卡后重新准备。",
@@ -95,7 +97,7 @@ func (a *App) paymentDetails(ctx context.Context, id string) M {
 	if a.isLinkOnly(ctx, id) {
 		return M{"enabled": false}
 	}
-	rows, e := a.query(ctx, "SELECT attempt_id,state,amount,currency,last4,quote_expires_at,fee_state,error_code,updated_at FROM payment_runs WHERE order_id=$1", id)
+	rows, e := a.query(ctx, "SELECT attempt_id,state,amount,currency,charged_amount,charged_currency,last4,quote_expires_at,fee_state,error_code,updated_at FROM payment_runs WHERE order_id=$1", id)
 	result := M{"enabled": a.paymentEnabled(ctx)}
 	if e == nil && len(rows) == 1 {
 		for k, v := range rows[0] {
@@ -405,6 +407,9 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 					return
 				}
 				switch event.Type {
+				case "diagnostic":
+					d := providerDiagnostic{Order: id, Phase: event.Phase, Code: event.Code, Status: event.HTTPStatus, RequestID: event.RequestID, Elapsed: time.Duration(event.ElapsedMS) * time.Millisecond, At: time.Now().UTC(), Details: event.Diagnostics}
+					a.enqueueDiagnostic(d)
 				case "stage":
 					if event.Code == "network_verified" {
 						closePhase("completed", "")
@@ -584,6 +589,12 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 		return nil
 	}
 	target, code, orderState := event.State, event.Code, "review"
+	if err := a.savePaymentEvidence(ctx, tx, id, attempt, event); err != nil {
+		if providerCode(err) != "invalid_response" {
+			return err
+		}
+		target, code = "review", "result_unconfirmed"
+	}
 	declined := target == "declined" && code == "payment_declined"
 	if declined {
 		target = "failed"
@@ -613,6 +624,10 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 		orderState = "awaiting_payment"
 	case "action_required":
 		code = "verification_required"
+	case "review":
+		if code != "payment_authorized" {
+			code = "result_unconfirmed"
+		}
 	default:
 		target = "review"
 		code = "result_unconfirmed"
@@ -646,7 +661,7 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 				return e
 			}
 		}
-		if target == "succeeded" && !keep {
+		if target == "succeeded" {
 			orderState = "processing"
 			if _, e = tx.Exec(ctx, "UPDATE subscription_runs SET renewal_state='pending',next_at=now(),updated_at=now() WHERE order_id=$1 AND renewal_state='not_started'", id); e != nil {
 				return e

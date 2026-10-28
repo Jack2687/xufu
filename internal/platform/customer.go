@@ -24,12 +24,12 @@ func (a *App) overview(w http.ResponseWriter, r *http.Request) {
 	stats["pending"] = pending
 	stats["used"] = used
 	stats["credited"] = credit
-	orders, _ := a.query(r.Context(), "SELECT id,product_id,product_name,email,country,seats,status,fee,source,workflow,keep_renewal,renewal,created_at,updated_at FROM orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5", u.ID)
+	orders, _ := a.query(r.Context(), "SELECT id,product_id,product_name,email,country,seats,status,fee,source,workflow,keep_renewal,renewal,activation,created_at,updated_at FROM orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5", u.ID)
 	ann, _ := a.query(r.Context(), "SELECT id,title,body,tone FROM announcements WHERE published AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>now()) ORDER BY sort,created_at DESC")
 	out(w, 200, M{"user": u, "stats": stats, "recent_orders": orders, "announcements": ann})
 }
 func (a *App) orders(w http.ResponseWriter, r *http.Request) {
-	a.list(w, r, "SELECT id,product_id,product_name,email,country,seats,status,fee,source,workflow,keep_renewal,renewal,created_at,updated_at FROM orders WHERE user_id=$1 AND ($2='' OR email ILIKE '%'||$2||'%' OR id ILIKE '%'||$2||'%') AND ($3='' OR status=$3) ORDER BY created_at DESC LIMIT 200", current(r).ID, r.URL.Query().Get("q"), r.URL.Query().Get("status"))
+	a.list(w, r, "SELECT id,product_id,product_name,email,country,seats,status,fee,source,workflow,keep_renewal,renewal,activation,created_at,updated_at FROM orders WHERE user_id=$1 AND ($2='' OR email ILIKE '%'||$2||'%' OR id ILIKE '%'||$2||'%') AND ($3='' OR status=$3) ORDER BY created_at DESC LIMIT 200", current(r).ID, r.URL.Query().Get("q"), r.URL.Query().Get("status"))
 }
 func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 	var v struct {
@@ -140,7 +140,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 			if n > 0 {
 				return nil, businessError{409, "该账号有未结束的续费申请，请先核实续费设置"}
 			}
-			if e := tx.QueryRow(r.Context(), "SELECT count(*) FROM orders o LEFT JOIN subscription_runs s ON s.order_id=o.id WHERE o.workflow='subscription' AND (o.email=$1 OR s.account_hash=$2) AND (o.status IN ('queued','processing','awaiting_payment','review') OR o.renewal IN ('review','retrying'))", sessionInfo.Email, hash(sessionInfo.AccountID)).Scan(&n); e != nil {
+			if e := tx.QueryRow(r.Context(), "SELECT count(*) FROM orders o LEFT JOIN subscription_runs s ON s.order_id=o.id WHERE o.workflow='subscription' AND (o.email=$1 OR s.account_hash=$2) AND (o.status IN ('queued','processing','awaiting_payment','review') OR o.renewal IN ('review','retrying') OR o.activation='review')", sessionInfo.Email, hash(sessionInfo.AccountID)).Scan(&n); e != nil {
 				return nil, e
 			}
 			if n > 0 {
@@ -206,7 +206,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) orderDetail(w http.ResponseWriter, r *http.Request) {
 	u := current(r)
-	items, e := a.query(r.Context(), "SELECT id,product_id,product_name,email,country,seats,status,fee,source,workflow,keep_renewal,renewal,created_at,updated_at,price_snapshot FROM orders WHERE id=$1 AND user_id=$2", r.PathValue("id"), u.ID)
+	items, e := a.query(r.Context(), "SELECT id,product_id,product_name,email,country,seats,status,fee,source,workflow,keep_renewal,renewal,activation,created_at,updated_at,price_snapshot FROM orders WHERE id=$1 AND user_id=$2", r.PathValue("id"), u.ID)
 	if e != nil {
 		fail(w, 500, "读取失败")
 		return

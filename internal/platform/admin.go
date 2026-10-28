@@ -47,7 +47,7 @@ func (a *App) adminOverview(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "统计读取失败")
 		return
 	}
-	recent, _ := a.query(r.Context(), "SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 8")
+	recent, _ := a.query(r.Context(), "SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.activation,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 8")
 	risk, _ := a.query(r.Context(), "SELECT * FROM risk_events ORDER BY id DESC LIMIT 5")
 	out(w, 200, M{"stats": rows[0], "orders": recent, "risks": risk, "scheduler": a.config(r.Context(), "scheduler"), "payment_connected": a.paymentEnabled(r.Context())})
 }
@@ -217,10 +217,10 @@ func (a *App) adjustBalance(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func (a *App) adminOrders(w http.ResponseWriter, r *http.Request) {
-	a.list(w, r, `SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON o.user_id=u.id WHERE ($1='' OR o.email ILIKE '%'||$1||'%' OR o.id ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%') AND ($2='' OR o.status=$2) ORDER BY o.created_at DESC LIMIT 500`, r.URL.Query().Get("q"), r.URL.Query().Get("status"))
+	a.list(w, r, `SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.activation,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON o.user_id=u.id WHERE ($1='' OR o.email ILIKE '%'||$1||'%' OR o.id ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%') AND ($2='' OR o.status=$2) ORDER BY o.created_at DESC LIMIT 500`, r.URL.Query().Get("q"), r.URL.Query().Get("status"))
 }
 func (a *App) adminOrderDetail(w http.ResponseWriter, r *http.Request) {
-	orders, e := a.query(r.Context(), "SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=$1", r.PathValue("id"))
+	orders, e := a.query(r.Context(), "SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.activation,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=$1", r.PathValue("id"))
 	if e != nil || len(orders) == 0 {
 		fail(w, 404, "订单不存在")
 		return

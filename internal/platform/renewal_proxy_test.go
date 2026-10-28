@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -133,22 +134,41 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 				waitPayment(t, h, id, "succeeded")
 			}
 			ctx := context.Background()
+			table, idColumn, email := "subscription_runs", "order_id", "subscription@example.com"
+			if mode == "standalone" {
+				table, idColumn, email = "renewal_tasks", "id", "renewal@example.com"
+			}
+			auth, _ := refreshFixture(t)
+			auth.Email = email
+			authRaw, _ := json.Marshal(auth)
+			authEnc, _ := h.a.encrypt(string(authRaw))
+			if _, err := h.a.DB.Exec(ctx, "UPDATE "+table+" SET credentials_enc=$2 WHERE "+idColumn+"=$1", id, authEnc); err != nil {
+				t.Fatal(err)
+			}
 			global := h.addProxy("US", 1)
 			chooseGlobal(t, h, global)
 			endpoint := "http://test-user:TEST_PROXY_SECRET@proxy.example.test:8080"
 			enc, _ := h.a.encrypt(endpoint)
 			h.a.DB.Exec(ctx, "UPDATE resources SET endpoint_enc=$2 WHERE id=$1", global, enc)
-			var writes, reads, tunnels atomic.Int32
+			var writes, reads, tunnels, refreshes atomic.Int32
 			var mu sync.Mutex
 			methods := []string{}
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Proxy-Authorization") != "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.Header.Get("Chatgpt-Account-Id") != "test-space" {
+				if r.Header.Get("Proxy-Authorization") != "" || (r.URL.Path != "/api/auth/session" && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")) || r.Header.Get("Chatgpt-Account-Id") != "test-space" {
 					t.Error("incorrect header isolation")
 				}
 				mu.Lock()
 				methods = append(methods, r.Method)
 				mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/api/auth/session" {
+					if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") == "" {
+						t.Error("refresh authentication leaked or missing")
+					}
+					refreshes.Add(1)
+					json.NewEncoder(w).Encode(testSession(email))
+					return
+				}
 				if r.Method == "POST" {
 					writes.Add(1)
 					io.WriteString(w, `{"success":true}`)
@@ -156,9 +176,9 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 				}
 				reads.Add(1)
 				if writes.Load() > 0 {
-					io.WriteString(w, `{"is_active":true,"will_renew":false}`)
+					io.WriteString(w, `{"is_active":true,"plan_type":"premium","will_renew":false}`)
 				} else {
-					io.WriteString(w, `{"is_active":true,"will_renew":true}`)
+					io.WriteString(w, `{"is_active":true,"plan_type":"premium","will_renew":true}`)
 				}
 			}))
 			defer upstream.Close()
@@ -224,13 +244,13 @@ func TestBothRenewalFlowsUseGlobalProxyForEveryRequest(t *testing.T) {
 					t.Fatal(state)
 				}
 			}
-			if writes.Load() != 1 || reads.Load() != 2 || tunnels.Load() < 1 || factories != 1 {
+			if writes.Load() != 1 || reads.Load() != 2 || refreshes.Load() != 1 || tunnels.Load() < 1 || factories != 1 {
 				t.Fatal("flow did not use one proxied session", writes.Load(), reads.Load(), tunnels.Load(), factories)
 			}
 			mu.Lock()
 			joined := strings.Join(methods, ",")
 			mu.Unlock()
-			if joined != "GET,POST,GET" {
+			if joined != "GET,GET,POST,GET" {
 				t.Fatal(joined)
 			}
 			var leases int

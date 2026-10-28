@@ -26,7 +26,7 @@ test('payment identity, quote and result require current session and final tax',
 test('hosted init, tax update and paid confirm use checkout session_id, never page id',()=>{
  const initial=body({tax:false,amount:579464})
  initial.currency='php'
- assert.deepEqual(snapshot(initial,id),{amount:579464,currency:'php',paid:false,taxReady:false,open:true,action:false})
+ assert.deepEqual(snapshot(initial,id),{amount:579464,currency:'php',paid:false,taxReady:false,open:true,action:false,authorized:false,evidence:{checkout_id:id,payment_intent_id:'',status:'pending',amount_received:null,currency:'php'}})
  const taxed={...initial,tax_meta:{status:'complete'},total_summary:{due:616550}}
  assert.equal(snapshot(taxed,id).taxReady,true)
  assert.equal(snapshot(taxed,id).amount,616550)
@@ -87,3 +87,16 @@ for(const mode of ['success','cancel','price_changed','unknown','action','declin
 })
 
 test('proxy input fails closed without pinned session',()=>{for(const input of [{},{proxy:{server:'http://example.com:80',username:'u',password:'p'},expected_ip:'203.0.113.2',proxy_expires_at:Date.now()+60000},{proxy:{server:'http://127.0.0.1:1',username:'u',password:'p'},expected_ip:'203.0.113.2',proxy_expires_at:0}])assert.throws(()=>paymentProxy(input))})
+
+ test('intent evidence is bound to the checkout, currency and captured amount',()=>{
+ const base=body({paid:false});const pi={id:'pi_QA123',status:'succeeded',currency:'usd',amount_received:1500}
+ assert.equal(snapshot({...base,payment_intent:pi},id).paid,true)
+ assert.equal(snapshot({...base,payment_intent:{...pi,status:'requires_capture'}},id).paid,false)
+ assert.equal(snapshot({...base,payment_intent:{...pi,status:'requires_capture'}},id).authorized,true)
+ assert.equal(snapshot({...base,payment_intent:{...pi,id:'pi_other_secret_private'}},id).paid,false)
+ assert.equal(snapshot({...base,session_id:'cs_test_other',payment_intent:pi},id),null)
+ assert.equal(snapshot({...base,payment_intent:{...pi,currency:'php'}},id),null)
+ assert.equal(snapshot({...base,payment_intent:{...pi,amount_received:1.5}},id).paid,false)
+ const evidence=snapshot({...base,payment_intent:{...pi,client_secret:'PRIVATE_SECRET',billing_details:{name:'PRIVATE_NAME'}}},id).evidence
+ assert.equal(JSON.stringify(evidence).includes('PRIVATE'),false)
+ })

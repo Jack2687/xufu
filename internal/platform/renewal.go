@@ -46,56 +46,123 @@ func renewalStatus(ctx context.Context, c *http.Client, in checkoutInput) (activ
 
 func (a *App) runRenewal(ctx context.Context, id, lease string) {
 	startedAt := time.Now()
-	a.paymentTrace(ctx, id, "renewal", "running", "", 0)
-	var enc string
+	var enc, email, product, activation string
 	var expiry time.Time
-	var started bool
-	var checks int
-	e := a.DB.QueryRow(ctx, "SELECT credentials_enc,credentials_expires_at,cancel_started,checks FROM subscription_runs WHERE order_id=$1 AND lease_token=$2", id, lease).Scan(&enc, &expiry, &started, &checks)
+	var started, keep bool
+	var checks, activationChecks int
+	e := a.DB.QueryRow(ctx, `SELECT s.credentials_enc,s.credentials_expires_at,s.cancel_started,s.checks,s.activation_checks,o.email,o.product_id,o.keep_renewal,o.activation
+ FROM subscription_runs s JOIN orders o ON o.id=s.order_id WHERE s.order_id=$1 AND s.lease_token=$2`, id, lease).Scan(&enc, &expiry, &started, &checks, &activationChecks, &email, &product, &keep, &activation)
 	if e != nil {
 		return
 	}
 	cfg := a.config(ctx, "payment")
-	state, message := "pending", "正在核实自动续费设置。"
+	state, message := "pending", "付款已成功，正在核实订阅生效。"
+	previousActivation := activation
+	if activation == "not_checked" {
+		activation = "pending"
+	}
+	var resultErr error
 	if enc == "" || !expiry.After(time.Now()) {
-		state, message = "review", "订阅成功，取消自动续费失败：账号授权已到期。请在续费管理粘贴新的 Session 继续处理，无需重新付款。"
+		resultErr = checkoutFailure("invalid_session", false, false)
 	} else {
-		raw, e := a.decrypt(enc)
+		raw, err := a.decrypt(enc)
 		var in checkoutInput
-		if e != nil || json.Unmarshal([]byte(raw), &in) != nil || in.AccessToken == "" || in.AccountID == "" {
-			state, message = "review", "订阅成功，取消自动续费失败。请在续费管理粘贴新的 Session 继续处理，无需重新付款。"
+		if err != nil || json.Unmarshal([]byte(raw), &in) != nil || in.AccessToken == "" || in.AccountID == "" {
+			resultErr = checkoutFailure("invalid_session", false, false)
 		} else {
+			if in.Email == "" {
+				in.Email = email
+			}
 			client, closeClient, err := a.openRenewalClient(ctx)
 			if err != nil {
-				a.paymentTrace(ctx, id, "renewal", "waiting", "proxy_unavailable", time.Since(startedAt))
+				a.paymentTrace(ctx, id, "activation", "waiting", "proxy_unavailable", time.Since(startedAt))
 				a.waitRenewalProxy(ctx, id, lease, false)
 				return
 			}
 			defer closeClient()
-			active, renew, err := renewalStatus(ctx, client, in)
-			if err == nil && active && !renew {
-				state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
-			} else if err == nil && active && renew && !started {
-				// Persist the fence BEFORE the only cancellation write, including on restart.
-				tag, claimErr := a.DB.Exec(ctx, "UPDATE subscription_runs SET cancel_started=true WHERE order_id=$1 AND lease_token=$2 AND NOT cancel_started AND lease_until>now()", id, lease)
-				if claimErr == nil && tag.RowsAffected() == 1 {
-					cancelRenewal(ctx, client, in)
-					// A timeout or 200 response is not success; read the current setting.
-					active, renew, err = renewalStatus(ctx, client, in)
-					if err == nil && active && !renew {
-						state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
+			auth := &providerSession{ctx: a.providerContext(ctx, id, "session_refresh"), client: client, in: &in, purpose: "renewal",
+				persist: func(v checkoutInput) error { return a.saveRenewalCredentials(ctx, id, lease, v, false) },
+				trace:   func(state, code string) { a.paymentTrace(ctx, id, "session_refresh", state, code, 0) }}
+			resultErr = auth.prepare()
+			if resultErr == nil {
+				a.paymentTrace(ctx, id, "activation", "running", "", 0)
+				var snapshot subscriptionSnapshot
+				snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "activation"), auth)
+				if resultErr == nil && snapshot.Active {
+					// New orders require the purchased plan; legacy rows retain prior semantics.
+					if previousActivation != "not_checked" {
+						resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
+					}
+					if resultErr == nil {
+						activation = "active"
+						if previousActivation != "active" {
+							checks = 1
+						}
+						a.paymentTrace(ctx, id, "activation", "completed", "", time.Since(startedAt))
+						if keep {
+							state, message = "kept", "订阅已生效，按您的选择保留自动续费。"
+						} else {
+							message = "订阅已生效，正在核实自动续费设置。"
+							a.paymentTrace(ctx, id, "renewal", "running", "", 0)
+							if snapshot.RenewalKnown && !snapshot.Renew {
+								state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
+							} else if snapshot.RenewalKnown && snapshot.Renew && !started {
+								tag, claimErr := a.DB.Exec(ctx, "UPDATE subscription_runs SET cancel_started=true WHERE order_id=$1 AND lease_token=$2 AND NOT cancel_started AND lease_until>now()", id, lease)
+								if claimErr != nil || tag.RowsAffected() != 1 {
+									return
+								}
+								cancelRenewal(a.providerContext(ctx, id, "renewal"), client, in)
+								snapshot, resultErr = readSubscription(a.providerContext(ctx, id, "renewal"), auth)
+								if resultErr == nil && snapshot.Active && previousActivation != "not_checked" {
+									resultErr = verifySubscriptionPlan(a.providerContext(ctx, id, "activation"), auth, snapshot, product)
+								}
+								if resultErr == nil && snapshot.Active && snapshot.RenewalKnown && !snapshot.Renew {
+									state, message = "disabled", "自动续费已关闭，当前订阅有效期保留。"
+								}
+							}
+						}
 					}
 				}
 			}
-			if renewalAuthorizationRejected(err) {
-				state, message = "review", subscriptionRenewalAuthorizationMessage
-			}
-			in = checkoutInput{}
-			raw = ""
 		}
 	}
-	if state == "pending" && checks >= num(cfg, "renewal_check_limit", 10) {
-		state, message = "review", "订阅成功，取消自动续费失败：暂未确认关闭结果。请在续费管理粘贴新的 Session 继续核实，无需重新付款。"
+	if resultErr != nil && (renewalAuthorizationRejected(resultErr) || providerCode(resultErr) == "account_mismatch" || providerCode(resultErr) == "plan_mismatch") {
+		state = "review"
+	}
+	delay := num(cfg, "renewal_check_interval_seconds", 30)
+	if activation != "active" {
+		activationChecks++
+		delay = num(cfg, "activation_check_interval_seconds", 5)
+		if activationChecks >= num(cfg, "activation_check_limit", 12) {
+			state = "review"
+		}
+		if state == "review" {
+			activation = "review"
+			message = "付款已成功，订阅生效暂未确认，请联系运营核实；无需再次付款。"
+			if renewalAuthorizationRejected(resultErr) {
+				message = "付款已成功，账号授权已失效，订阅生效暂未确认。请更新授权后核实，无需再次付款。"
+			}
+		} else {
+			message = "付款已成功，等待订阅同步，系统将自动再次核实。"
+		}
+		code := "activation_pending"
+		traceState := "waiting"
+		if state == "review" {
+			code = "activation_review"
+			traceState = "review"
+		}
+		if resultErr != nil {
+			code = providerCode(resultErr)
+		}
+		a.paymentTrace(ctx, id, "activation", traceState, code, time.Since(startedAt))
+	} else if state == "pending" && checks >= num(cfg, "renewal_check_limit", 10) {
+		state = "review"
+	}
+	if activation == "active" && state == "review" {
+		message = "订阅成功，取消自动续费失败：暂未确认关闭结果。请在续费管理粘贴新的 Session 继续核实，无需重新付款。"
+		if renewalAuthorizationRejected(resultErr) {
+			message = subscriptionRenewalAuthorizationMessage
+		}
 	}
 	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -108,24 +175,25 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 	if _, e = tx.Exec(ctx, "SELECT id FROM orders WHERE id=$1 FOR UPDATE", id); e != nil {
 		return
 	}
-	tag, e := tx.Exec(ctx, `UPDATE subscription_runs SET renewal_state=$3,credentials_enc=CASE WHEN $3 IN ('disabled','review') THEN '' ELSE credentials_enc END,next_at=now()+($4*interval '1 second'),lease_token=NULL,lease_until=NULL,updated_at=now() WHERE order_id=$1 AND lease_token=$2`, id, lease, state, num(cfg, "renewal_check_interval_seconds", 30))
+	tag, e := tx.Exec(ctx, `UPDATE subscription_runs SET renewal_state=$3,credentials_enc=CASE WHEN $3 IN ('disabled','kept','review') THEN '' ELSE credentials_enc END,
+ next_at=now()+($4*interval '1 second'),lease_token=NULL,lease_until=NULL,checks=$5,activation_checks=$6,updated_at=now() WHERE order_id=$1 AND lease_token=$2 AND lease_until>now()`, id, lease, state, delay, checks, activationChecks)
 	if e != nil || tag.RowsAffected() != 1 {
 		return
 	}
-	status := "processing"
-	if state == "disabled" {
+	status, renewal := "processing", state
+	if state == "disabled" || state == "kept" || state == "review" {
 		status = "succeeded"
 	}
-	if state == "review" {
-		status = "succeeded"
+	if keep {
+		renewal = "kept"
 	}
-	if _, e = tx.Exec(ctx, "UPDATE orders SET renewal=$2,status=$3,updated_at=now() WHERE id=$1", id, state, status); e != nil {
+	if _, e = tx.Exec(ctx, "UPDATE orders SET renewal=$2,status=$3,activation=$4,updated_at=now() WHERE id=$1", id, renewal, status, activation); e != nil {
 		return
 	}
 	if _, e = tx.Exec(ctx, "INSERT INTO order_events(order_id,stage,message) VALUES($1,'renewal',$2)", id, message); e != nil {
 		return
 	}
-	if state == "disabled" || state == "review" {
+	if state != "pending" {
 		traceState := "completed"
 		if state == "review" {
 			traceState = "review"
@@ -134,7 +202,7 @@ func (a *App) runRenewal(ctx context.Context, id, lease string) {
 			return
 		}
 	}
-	if tx.Commit(ctx) == nil {
+	if tx.Commit(ctx) == nil && activation == "active" {
 		traceState := "completed"
 		if state == "pending" {
 			traceState = "waiting"
