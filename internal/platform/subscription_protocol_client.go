@@ -11,7 +11,20 @@ import (
 	"xupay/internal/cslive"
 )
 
-func (r *protocolRun) client(ttl int) (*cslive.Client, func(), error) {
+type protocolPaymentClient interface {
+	Pay(context.Context, cslive.Session, cslive.Card, cslive.PayOptions) (cslive.Result, error)
+	Recover(context.Context, cslive.Checkpoint) (cslive.Result, error)
+	Proxy() string
+}
+
+type nativeProtocolClient struct{ *cslive.Client }
+
+func (c nativeProtocolClient) Proxy() string { return c.Config.Proxy }
+
+func (r *protocolRun) client(ttl int) (protocolPaymentClient, func(), error) {
+	if r.a.protocolClient != nil {
+		return r.a.protocolClient(r, ttl)
+	}
 	var enc, proxyLease string
 	var expires time.Time
 	err := r.a.DB.QueryRow(r.ctx, `SELECT s.endpoint_enc,s.expires_at,COALESCE(c.proxy_lease_id,'')
@@ -67,10 +80,12 @@ func (r *protocolRun) client(ttl int) (*cslive.Client, func(), error) {
 		return nil
 	}
 	timezone := map[string]string{"PH": "Asia/Manila", "US": "America/New_York", "JP": "Asia/Tokyo", "SG": "Asia/Singapore", "GB": "Europe/London", "EG": "Africa/Cairo", "TR": "Europe/Istanbul"}[r.country]
-	c := cslive.NewClient(cslive.Config{Proxy: proxyURL.String(), Timeout: 45, Deadline: float64(ttl), Currency: strings.ToUpper(r.currency), Timezone: timezone}, cslive.Hooks{
+	config := cslive.DefaultConfig()
+	config.Proxy, config.Currency, config.Timezone = proxyURL.String(), strings.ToUpper(r.currency), timezone
+	c := cslive.NewClient(config, cslive.Hooks{
 		Checkpoint: r.save, BeforeRequest: guard, Progress: r.progress, Event: r.event,
 	})
-	return c, closeAll, nil
+	return nativeProtocolClient{c}, closeAll, nil
 }
 
 func (r *protocolRun) guardIP(ctx context.Context, probe *http.Client) error {

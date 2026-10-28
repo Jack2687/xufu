@@ -148,8 +148,9 @@ func (a *App) executeProtocolSubscription(parent context.Context, j *Job) {
 		}
 		return
 	}
-	cfg := a.config(parent, "payment")
-	ttl := num(cfg, "prepare_timeout_seconds", 120) + num(cfg, "result_timeout_seconds", 120) + 120
+	// Reserve the original package's ten-minute SDK window as well as time for
+	// Pay and the authoritative Recover/activation/renewal sequence afterwards.
+	ttl := int(2*cslive.DefaultConfig().Deadline) + 600 + 120
 	ctx, cancel := context.WithTimeout(parent, time.Duration(ttl)*time.Second)
 	defer cancel()
 	stop := context.AfterFunc(slot.ctx, cancel)
@@ -219,6 +220,11 @@ func (a *App) executeProtocolSubscription(parent context.Context, j *Job) {
 	options.CancelRenewal = &cancelRenewal
 	result, err := client.Pay(ctx, session, cslive.Card{Number: card.Number, CVC: card.CVC, ExpMonth: card.Month, ExpYear: card.Year}, options)
 	card = cardInput{}
+	if err != nil {
+		run.fail(err)
+		return
+	}
+	result, err = run.continuePaymentAction(client, result, nil)
 	if err != nil {
 		run.fail(err)
 		return

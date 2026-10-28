@@ -40,6 +40,7 @@ func NewClient(config Config, hooks Hooks) *Client {
 func ErrorCode(err error) string    { return protocol_FlowErrorCode(err) }
 func Failure(code string) error     { return protocol_NewError(code) }
 func DefaultCheckpoint() Checkpoint { return model_DefaultCheckpoint() }
+func DefaultConfig() Config         { return model_DefaultConfig() }
 
 // Export only finite diagnostic vocabularies, never action payloads or secrets.
 func SafeActionType(value string) string       { return observability_SafeActionType(value) }

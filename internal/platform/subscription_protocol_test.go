@@ -15,6 +15,10 @@ import (
 )
 
 func nativeFixture(t *testing.T, keep bool) (*harness, *protocolRun, cslive.Checkpoint) {
+	return protocolFixture(t, keep, false)
+}
+
+func protocolFixture(t *testing.T, keep, worker bool) (*harness, *protocolRun, cslive.Checkpoint) {
 	t.Helper()
 	h := setupTest(t)
 	ctx := context.Background()
@@ -37,7 +41,9 @@ func nativeFixture(t *testing.T, keep bool) (*harness, *protocolRun, cslive.Chec
 		t.Fatal("new subscription did not use native runtime")
 	}
 	attempt := s.attempt
-	close(s.protocol.done)
+	if !worker {
+		close(s.protocol.done)
+	}
 	h.a.paymentMu.Unlock()
 	j, err := h.a.Claim(ctx)
 	if err != nil || j == nil || j.OrderID != id {
@@ -47,8 +53,10 @@ func nativeFixture(t *testing.T, keep bool) (*harness, *protocolRun, cslive.Chec
 	if _, err = h.a.DB.Exec(ctx, "UPDATE subscription_runs SET max_amount=2000 WHERE order_id=$1", id); err != nil {
 		t.Fatal(err)
 	}
-	if err = r.claim(180); err != nil {
-		t.Fatal(err)
+	if !worker {
+		if err = r.claim(180); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cp := cslive.DefaultCheckpoint()
 	cp.AccountID, cp.Email, cp.AccessToken, cp.SessionToken = r.account, r.email, "TEST_PRIVATE_AT", "TEST_PRIVATE_SESSION"
@@ -61,8 +69,10 @@ func nativeFixture(t *testing.T, keep bool) (*harness, *protocolRun, cslive.Chec
 	cp.Phase = "priced"
 	amount := int64(1500)
 	cp.Amount = &amount
-	if err = r.save(cp); err != nil {
-		t.Fatal(err)
+	if !worker {
+		if err = r.save(cp); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return h, r, cp
 }

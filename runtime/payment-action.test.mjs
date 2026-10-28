@@ -6,7 +6,7 @@ const input=()=>({proxy:{server:'http://127.0.0.1:9',username:'fixture',password
 for(const mode of ['automatic','interactive','wrong_intent','not_required','sdk_error']){
  test('official SDK original-transaction flow: '+mode,{timeout:20000},async()=>{
   const events=[],requests=[];let handler
-  await runAction(input(),v=>events.push(v),{onCommand:fn=>{handler=fn}}, {
+  await runAction({...input(),automatic:mode==='automatic'},v=>events.push(v),{onCommand:fn=>{handler=fn}}, {
    route:async route=>{
     requests.push({method:route.request().method(),url:route.request().url()})
     if(route.request().url()==='https://js.stripe.com/v3/'){
@@ -32,6 +32,7 @@ for(const mode of ['automatic','interactive','wrong_intent','not_required','sdk_
   assert.equal(results[0].code,({wrong_intent:'context_mismatch',not_required:'action_not_required',sdk_error:'card_declined'})[mode]||'')
   assert.equal(requests.some(r=>r.url.includes('/confirm')||r.url.includes('/payment_methods')),false)
   assert.equal(JSON.stringify(events).includes('pi_Fixture_secret_Test'),false)
+  if(mode==='automatic')assert.equal(events.some(e=>e.type==='frame'),false)
  })
 }
 test('expired original proxy never starts a browser',async()=>{
@@ -62,4 +63,20 @@ test('closing while the official SDK is loading interrupts navigation',{timeout:
  await assert.rejects(runAction(input(),()=>{},{onCommand:fn=>handler=fn},{
   route:async route=>{handler({type:'close'});await route.abort();return true}
  }))
+})
+
+test('automatic SDK waits for its own result; timeout never fakes an interaction',{timeout:15000},async()=>{
+ const events=[];let handler
+ await runAction({...input(),automatic:true,expires_at:Math.floor(Date.now()/1000)+4},v=>events.push(v),{onCommand:fn=>handler=fn},{
+  route:async route=>{
+   await route.fulfill({contentType:'application/javascript',body:`window.Stripe=()=>({retrievePaymentIntent:async()=>({paymentIntent:{id:'pi_Fixture',status:'requires_action'}}),handleNextAction:async()=>new Promise(resolve=>{const b=document.createElement('button');b.id='fixture-user-required';b.textContent='Offline user-required fixture';b.onclick=()=>resolve({});document.body.append(b)})})`});return true
+  },
+  ready:async page=>{
+   await page.locator('#fixture-user-required').waitFor()
+   const box=await page.locator('#fixture-user-required').boundingBox()
+   await handler({type:'click',x:box.x+box.width/2,y:box.y+box.height/2})
+  }
+ })
+ assert.equal(events.filter(e=>e.type==='timeout').length,1)
+ assert.equal(events.some(e=>e.type==='result'||e.type==='frame'),false)
 })

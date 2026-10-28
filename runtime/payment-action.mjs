@@ -28,7 +28,7 @@ export async function runAction(input,emit,commands,fixture={}) {
   commands.onCommand(v=>{
     if(v.type==='guard') { const resolve=guards.get(v.request_id);if(resolve){guards.delete(v.request_id);resolve(v.allow===true)};return }
     if(v.type==='close'){closed=true;resolveDone();return}
-    if(finished||closed||!page||queued>=32)return
+    if(input.automatic||finished||closed||!page||queued>=32)return
     queued++
     commandQueue=commandQueue.then(async()=>{
       if(closed||finished)return
@@ -42,7 +42,7 @@ export async function runAction(input,emit,commands,fixture={}) {
   try {
     browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||undefined,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],proxy:input.proxy})
     if(closed)return
-    timer=setTimeout(()=>{closed=true;resolveDone();void browser.close()},Math.max(1,expires-Date.now()))
+    timer=setTimeout(()=>{if(!finished)emit({type:'timeout'});closed=true;resolveDone();void browser.close()},Math.max(1,expires-Date.now()))
     // Closing stdin or an operator close also interrupts navigation/SDK loading.
     void done.then(()=>{if(closed)void browser.close()})
     const context=await browser.newContext({viewport:{width:960,height:720},acceptDownloads:false,serviceWorkers:'block'})
@@ -87,7 +87,7 @@ export async function runAction(input,emit,commands,fixture={}) {
     // as the supplied page. Only its initial continue button is automated.
     await page.locator('#start').click()
     emit({type:'ready'})
-    screenTimer=setInterval(async()=>{
+    if(!input.automatic)screenTimer=setInterval(async()=>{
       if(frameBusy||finished||closed)return
       frameBusy=true
       try{const data=await page.screenshot({type:'jpeg',quality:70,timeout:3000});if(data.length<=1000000)emit({type:'frame',image:data.toString('base64')})}catch{}

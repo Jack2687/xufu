@@ -77,10 +77,7 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "原订单代理会话已失效，已停止自动核实")
 		return
 	}
-	ttl := num(a.config(ctx, "payment"), "result_timeout_seconds", 120) + 120
-	if action {
-		ttl += 600
-	}
+	ttl := int(2*cslive.DefaultConfig().Deadline) + 600 + 120
 	proxy, err := a.acquireOrderProxyTx(ctx, tx, id, country, time.Duration(ttl+15)*time.Second)
 	if err != nil {
 		fail(w, 409, "原订单代理暂不可用，请稍后核实")
@@ -154,14 +151,16 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer closeClient()
-		cp.Proxy = client.Config.Proxy
+		cp.Proxy = client.Proxy()
+		var result cslive.Result
 		if verification != nil {
-			if err = run.runPaymentAction(cp, verification); err != nil {
-				run.fail(err)
-				return
+			result, err = run.continuePaymentAction(client, cslive.Result{Checkpoint: cp}, verification)
+		} else {
+			result, err = client.Recover(runCtx, cp)
+			if err == nil {
+				result, err = run.continuePaymentAction(client, result, nil)
 			}
 		}
-		result, err := client.Recover(runCtx, cp)
 		if err != nil {
 			run.fail(err)
 			return

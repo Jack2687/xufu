@@ -43,6 +43,7 @@ type App struct {
 	paymentActions      map[string]*paymentAction
 	actionStart         actionStarter
 	actionProbeClient   func(string, time.Duration) (*http.Client, func(), error)
+	protocolClient      func(*protocolRun, int) (protocolPaymentClient, func(), error)
 	providerDiagnostics chan providerDiagnostic
 	diagnosticDrops     atomic.Uint64
 	diagnosticFailures  atomic.Uint64

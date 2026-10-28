@@ -25,6 +25,7 @@ type actionInput struct {
 	ExpiresAt      int64              `json:"expires_at"`
 	PublishableKey string             `json:"publishable_key"`
 	ClientSecret   string             `json:"client_secret"`
+	Automatic      bool               `json:"automatic"`
 }
 type actionCommand struct {
 	RequestID int     `json:"request_id,omitempty"`
@@ -55,6 +56,7 @@ type paymentAction struct {
 	expires                time.Time
 	process                actionProcess
 	cancel                 context.CancelFunc
+	automatic              bool
 }
 type nodeAction struct {
 	events chan actionEvent
@@ -219,7 +221,21 @@ func (a *App) actionInput(w http.ResponseWriter, r *http.Request) {
 	out(w, 200, M{"ok": true})
 }
 
-func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) error {
+func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) (resultErr error) {
+	started := time.Now()
+	code := ""
+	if v.automatic {
+		code = "automatic_verification"
+	}
+	r.a.paymentTrace(r.ctx, r.id, "verification", "running", code, 0)
+	defer func() {
+		if resultErr != nil {
+			r.a.paymentTrace(r.ctx, r.id, "verification", "review", protocolPublicCode(cslive.ErrorCode(resultErr)), time.Since(started))
+		}
+		v.mu.Lock()
+		v.process, v.frame = nil, nil
+		v.mu.Unlock()
+	}()
 	if cp.Payment != "action_required" || !paymentIntentID.MatchString(cp.PaymentIntentID) || !strings.HasPrefix(cp.ClientSecret, cp.PaymentIntentID+"_secret_") || cp.PublishableKey == "" {
 		return cslive.Failure("payment_intent_state_unavailable")
 	}
@@ -275,10 +291,7 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) e
 		return cslive.Failure("proxy_session_unavailable")
 	}
 	defer closeBridge()
-	expiry := time.Now().Add(10 * time.Minute)
-	if expires.Before(expiry) {
-		expiry = expires
-	}
+	expiry, _ := ctx.Deadline()
 	v.mu.Lock()
 	v.expires = expiry
 	v.mu.Unlock()
@@ -286,7 +299,7 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) e
 	if starter == nil {
 		starter = startActionNode
 	}
-	process, err := starter(ctx, actionInput{Proxy: bridge, ExpectedIP: expected, ExpiresAt: expiry.Unix(), PublishableKey: cp.PublishableKey, ClientSecret: cp.ClientSecret})
+	process, err := starter(ctx, actionInput{Proxy: bridge, ExpectedIP: expected, ExpiresAt: expiry.Unix(), PublishableKey: cp.PublishableKey, ClientSecret: cp.ClientSecret, Automatic: v.automatic})
 	if err != nil {
 		return cslive.Failure("action_runtime_unavailable")
 	}
@@ -294,8 +307,6 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) e
 	v.mu.Lock()
 	v.process = process
 	v.mu.Unlock()
-	r.a.paymentTrace(r.ctx, r.id, "verification", "running", "", 0)
-	started := time.Now()
 	completed := false
 	runtimeCode := "action_interrupted"
 events:
@@ -303,6 +314,9 @@ events:
 		var e actionEvent
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				runtimeCode = "action_timeout"
+			}
 			break events
 		case event, ok := <-process.Events():
 			if !ok {
@@ -325,9 +339,11 @@ events:
 		case "ready":
 			v.state = "verifying"
 		case "frame":
-			if b, err := base64.StdEncoding.DecodeString(e.Image); err == nil && len(b) <= 1000000 && len(b) > 3 && b[0] == 0xff && b[1] == 0xd8 {
+			if b, err := base64.StdEncoding.DecodeString(e.Image); !v.automatic && err == nil && len(b) <= 1000000 && len(b) > 3 && b[0] == 0xff && b[1] == 0xd8 {
 				v.frame = b
 			}
+		case "timeout":
+			runtimeCode = "action_timeout"
 		case "error":
 			v.code = "action_runtime_unavailable"
 			runtimeCode = v.code
@@ -339,13 +355,11 @@ events:
 			r.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "verification", At: time.Now().UTC(), Elapsed: time.Since(started), Details: M{"sdk_outcome": safeActionOutcome(e.Outcome), "sdk_code": v.code}})
 		}
 		v.mu.Unlock()
+		if completed || e.Type == "error" || e.Type == "timeout" {
+			break events
+		}
 	}
-	v.mu.Lock()
-	v.process = nil
-	v.frame = nil
-	v.mu.Unlock()
 	if !completed {
-		r.a.paymentTrace(context.WithoutCancel(r.ctx), r.id, "verification", "review", protocolPublicCode(runtimeCode), time.Since(started))
 		return cslive.Failure(runtimeCode)
 	}
 	// The browser result is advisory. Recover reads the original transaction;

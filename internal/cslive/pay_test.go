@@ -115,7 +115,7 @@ func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
 					t.Fatal("card persisted in checkpoint")
 				}
 			}
-			if mode == "unknown" {
+			if mode == "unknown" || mode == "action_required" {
 				recovering = true
 				recovered, e := flow.client.Recover(context.Background(), result.Checkpoint)
 				if e != nil || recovered.Payment != "charged" || recovered.Renewal != "off" || confirms != 1 || creates != 1 {
