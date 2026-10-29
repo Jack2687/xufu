@@ -333,6 +333,11 @@ func (t *transport_Transport) observe(method, rawURL string, attempt int, starte
 			}
 		}
 		u, _ := url.Parse(rawURL)
+		// Label only the exact business response already recognized by Call.
+		// Preserve the real 404; this changes diagnostics, never flow decisions.
+		if u != nil && u.Hostname() == "chatgpt.com" && chatgpt_isSubscriptionNotFound(method, u.EscapedPath(), response) {
+			fields["error_code"] = "subscription_not_found"
+		}
 		if t.service == "stripe" && u.Hostname() == "api.stripe.com" {
 			if id := response.Headers.Get("Request-Id"); id != "" {
 				fields["request_id"] = id

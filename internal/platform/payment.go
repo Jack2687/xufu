@@ -104,6 +104,19 @@ func (a *App) paymentDetails(ctx context.Context, id string) M {
 	result := M{"enabled": a.paymentEnabled(ctx)}
 	if a.isProtocolSubscription(ctx, id) {
 		result["enabled"] = a.config(ctx, "payment")["enabled"] == true
+		var active bool
+		if a.DB.QueryRow(ctx, "SELECT COALESCE(lease_until>now(),false) FROM subscription_protocol WHERE order_id=$1", id).Scan(&active) == nil {
+			a.paymentMu.Lock()
+			interactive := a.paymentActions[id]
+			a.paymentMu.Unlock()
+			manualRunning := false
+			if interactive != nil {
+				interactive.mu.Lock()
+				manualRunning = interactive.expires.After(time.Now()) && interactive.state != "finished" && interactive.state != "closed"
+				interactive.mu.Unlock()
+			}
+			result["automatic_running"] = active && !manualRunning
+		}
 		var canCheck bool
 		if a.DB.QueryRow(ctx, `SELECT s.checkpoint_enc<>'' AND s.expires_at>now() AND (s.lease_until IS NULL OR s.lease_until<now())
  AND (p.state IN ('review','action_required') OR (p.state='succeeded' AND (o.activation='review' OR o.renewal='review')))
@@ -128,6 +141,9 @@ func (a *App) paymentDetails(ctx context.Context, id string) M {
 			}
 			if str(result, "state") == "action_required" {
 				result["message"] = "付款等待官方验证，流程已暂停，请联系运营核实。"
+			}
+			if result["automatic_running"] == true && (str(result, "state") == "checking" || str(result, "state") == "action_required") {
+				result["message"] = "系统正在自动处理付款验证及结果核实，请等待。"
 			}
 		}
 	}

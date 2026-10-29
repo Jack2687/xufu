@@ -33,6 +33,9 @@ for(const mode of ['automatic','interactive','wrong_intent','not_required','sdk_
   assert.equal(requests.some(r=>r.url.includes('/confirm')||r.url.includes('/payment_methods')),false)
   assert.equal(JSON.stringify(events).includes('pi_Fixture_secret_Test'),false)
   if(mode==='automatic')assert.equal(events.some(e=>e.type==='frame'),false)
+  const stages=events.filter(e=>e.type==='progress').map(e=>e.stage)
+  for(const stage of ['browser_start','page_loading','sdk_loaded','context_ready','preflight','preflight_returned','notifying'])assert.ok(stages.includes(stage),stage)
+  assert.equal(stages.includes('sdk_action'),!['wrong_intent','not_required'].includes(mode))
  })
 }
 test('expired original proxy never starts a browser',async()=>{
@@ -40,6 +43,14 @@ test('expired original proxy never starts a browser',async()=>{
 })
 test('SDK messages cannot inject secrets into diagnostics',()=>{
  assert.deepEqual(safeActionResult({outcome:'secret token',code:'pi_live_secret_private'}),{outcome:'page_error',code:'unknown'})
+})
+
+test('progress observation never breaks an SDK with frozen methods',{timeout:20000},async()=>{
+ const events=[]
+ await runAction({...input(),automatic:true},v=>events.push(v),{onCommand(){}},{route:async route=>{
+  await route.fulfill({contentType:'application/javascript',body:`window.Stripe=()=>Object.freeze({retrievePaymentIntent:async()=>({paymentIntent:{id:'pi_Fixture',status:'requires_action'}}),handleNextAction:async()=>({})})`});return true
+ }})
+ assert.equal(events.find(e=>e.type==='result')?.outcome,'sdk_returned')
 })
 
 test('every external request needs the original-session guard; denial never falls back',{timeout:20000},async()=>{

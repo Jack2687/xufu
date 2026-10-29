@@ -83,8 +83,17 @@ func (a *App) saveProviderDiagnostic(d providerDiagnostic) {
 	if d.Code != "" || d.Status >= http.StatusBadRequest {
 		state = "failed"
 	}
-	if d.Code == "verification_required" || d.Details["payment_state"] == "action_required" || (d.Phase == "verification" && d.Details["sdk_outcome"] != "sdk_returned") {
+	if d.Code == "verification_required" || d.Details["payment_state"] == "action_required" || (d.Phase == "verification" && d.Details["sdk_outcome"] != nil && d.Details["sdk_outcome"] != "sdk_returned") {
 		state = "review"
+	}
+	if d.Code == "verification_continuing" || (d.Phase == "verification" && d.Details["sdk_event"] == "progress") {
+		state = "running"
+	}
+	if d.Phase == "verification" && d.Details["sdk_event"] == "diagnostic" {
+		state = "review"
+	}
+	if d.Code == "subscription_absent" {
+		state = "completed"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

@@ -17,7 +17,10 @@ var paymentPhases = map[string]string{
 	"result": "付款处理结果", "restart": "重建会话与结账信息", "renewal": "取消自动续费",
 }
 var traceCodes = map[string]string{
-	"automatic_verification": "服务端自动接续原交易的官方验证", "action_timeout": "官方验证在有效期内未完成，原交易保留待核实",
+	"subscription_absent":     "当前账号尚无订阅，属于新开通前的正常查询结果",
+	"verification_continuing": "付款需要后续验证，系统将自动接续处理，无需人工发起",
+	"action_guard_overloaded": "验证资源检查数量异常，已停止本轮验证并保留原交易",
+	"automatic_verification":  "服务端自动接续原交易的官方验证", "action_timeout": "官方验证在有效期内未完成，原交易保留待核实",
 	"action_runtime_unavailable": "验证窗口暂不可用，原交易保留待核实", "action_interrupted": "验证窗口已结束，原交易仍需核实",
 	"account_mismatch": "账号或空间不一致", "account_status_unknown": "暂未取得明确账号状态", "existing_subscription": "账号已有有效订阅", "personal_account_required": "请选择个人空间办理",
 	"session_refresh_unavailable": "当前授权不包含自动刷新凭据", "subscription_not_found": "订阅尚未同步", "activation_pending": "已付款，等待订阅同步", "activation_review": "已付款，订阅生效待核实", "plan_mismatch": "订阅套餐与本单不符", "internal_error": "阶段状态保存未完成",
@@ -74,6 +77,11 @@ func (a *App) paymentTraceDetails(ctx context.Context, id string) []M {
 		}
 		if description == "" && code != "" {
 			description = "阶段未完成，请结合前后记录核实"
+		}
+		// Old progress rows described an intermediate SDK handoff as a request
+		// for manual verification. Correct presentation without rewriting audit data.
+		if code == "verification_required" && (str(row, "phase") == "confirming" || str(row, "phase") == "checking") {
+			description = "原交易要求后续验证；自动接续情况见后续官方付款验证记录"
 		}
 		row["description"] = description
 	}

@@ -10,6 +10,9 @@ import {chromium} from 'playwright'
 
 const html=fs.readFileSync(new URL('./payment-action.html',import.meta.url),'utf8')
 const script=fs.readFileSync(new URL('./payment-action-sdk.js',import.meta.url),'utf8')
+const observer=fs.readFileSync(new URL('./payment-action-observer.js',import.meta.url),'utf8')
+const stages=new Set(['browser_start','page_loading','sdk_loaded','context_ready','preflight','preflight_returned','preflight_error','sdk_action','sdk_returned','sdk_exception','verifying','notifying'])
+export function actionResource(raw){try{const u=new URL(raw);if(u.hostname==='js.stripe.com'&&u.pathname==='/v3/')return 'sdk_script';if(u.hostname==='api.stripe.com')return 'processor_api';if(u.hostname.endsWith('.stripe.com'))return 'sdk_frame';return 'verification_resource'}catch{return 'verification_resource'}}
 const outcomes=new Set(['sdk_returned','sdk_error','sdk_exception','page_error'])
 const codes=new Set(['','authentication_required','payment_intent_authentication_failure','card_declined','expired_card','incorrect_cvc','processing_error','preflight_failed','context_mismatch','action_not_required','csp_blocked','sdk_unavailable','payment_intent_unexpected_state','payment_intent_invalid_parameter','invalid_client_secret','resource_missing','api_connection_error','sdk_error','unknown'])
 export function safeActionResult(v={}){return {outcome:outcomes.has(v.outcome)?v.outcome:'page_error',code:codes.has(v.code)?v.code:'unknown'}}
@@ -19,7 +22,9 @@ export async function runAction(input,emit,commands,fixture={}) {
   const expires=Math.min(Date.now()+600000,input.expires_at*1000)
   if(expires<=Date.now())throw Error('expired')
   const base='https://xupay-action.invalid/'+crypto.randomBytes(24).toString('hex')+'/'
-  let timer,screenTimer,finished=false,closed=false,frameBusy=false,page,browser,sequence=0
+  let timer,screenTimer,heartbeat,finished=false,closed=false,frameBusy=false,page,browser,sequence=0,stage='browser_start',stageAt=Date.now(),diagnostics=0
+  const progress=(next,extra={})=>{if(finished||closed||!stages.has(next))return;stage=next;stageAt=Date.now();emit({type:'progress',stage,...extra})}
+  const diagnostic=(code,resource,status=0)=>{if(diagnostics++<40&&!finished&&!closed)emit({type:'diagnostic',stage,code,resource,status})}
   const guards=new Map()
   let resolveDone
   const done=new Promise(resolve=>{resolveDone=resolve})
@@ -40,12 +45,18 @@ export async function runAction(input,emit,commands,fixture={}) {
     return commandQueue
   })
   try {
+    progress('browser_start')
     browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||undefined,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],proxy:input.proxy})
     if(closed)return
     timer=setTimeout(()=>{if(!finished)emit({type:'timeout'});closed=true;resolveDone();void browser.close()},Math.max(1,expires-Date.now()))
     // Closing stdin or an operator close also interrupts navigation/SDK loading.
     void done.then(()=>{if(closed)void browser.close()})
     const context=await browser.newContext({viewport:{width:960,height:720},acceptDownloads:false,serviceWorkers:'block'})
+    await context.exposeBinding('__xupayActionProgress',(source,next)=>{if(source.frame===page?.mainFrame()&&stages.has(next))progress(next)})
+    await context.exposeBinding('__xupayActionCSP',()=>diagnostic('csp_blocked','verification_resource'))
+    await context.addInitScript(()=>document.addEventListener('securitypolicyviolation',()=>{void window.__xupayActionCSP().catch(()=>{})}))
+    context.on('requestfailed',req=>diagnostic('resource_failed',actionResource(req.url())))
+    context.on('response',res=>{if(res.status()>=400)diagnostic('resource_http_error',actionResource(res.url()),res.status())})
     const csp="default-src 'none'; script-src 'self' https://js.stripe.com https://*.js.stripe.com; frame-src https://js.stripe.com https://*.stripe.com; connect-src 'self' https://*.stripe.com; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     const headers={'cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff','content-security-policy':csp}
     await context.route('**/*',async route=>{
@@ -54,10 +65,11 @@ export async function runAction(input,emit,commands,fixture={}) {
         if(req.url().startsWith(base)) {
           const relative=req.url().slice(base.length)
           if(relative===''&&req.method()==='GET')return route.fulfill({status:200,headers,contentType:'text/html',body:html})
-          if(relative==='app.js'&&req.method()==='GET')return route.fulfill({status:200,headers,contentType:'application/javascript',body:script})
+          if(relative==='app.js'&&req.method()==='GET')return route.fulfill({status:200,headers,contentType:'application/javascript',body:'"use strict";\n'+observer+'\n;\n'+script})
           if(req.method()==='POST'&&req.headers()['x-action-request']==='1'&&req.headers().origin===new URL(base).origin){
-            if(relative==='context')return route.fulfill({status:200,headers,contentType:'application/json',body:JSON.stringify({publishableKey:input.publishable_key,clientSecret:input.client_secret})})
+            if(relative==='context'){progress('context_ready');return route.fulfill({status:200,headers,contentType:'application/json',body:JSON.stringify({publishableKey:input.publishable_key,clientSecret:input.client_secret})})}
             if(relative==='complete'){
+              progress('notifying')
               const value=JSON.parse(req.postData()||'{}')
               await route.fulfill({status:204,headers})
               finish(value);return
@@ -72,7 +84,7 @@ export async function runAction(input,emit,commands,fixture={}) {
         // Reused HTTPS connections must recheck the original IP and lease too.
         const requestID=++sequence
         const allowed=await new Promise(resolve=>{
-          const timeout=setTimeout(()=>{guards.delete(requestID);resolve(false)},15000)
+          const timeout=setTimeout(()=>{guards.delete(requestID);diagnostic('guard_timeout',actionResource(req.url()));resolve(false)},15000)
           guards.set(requestID,value=>{clearTimeout(timeout);resolve(value)})
           emit({type:'guard',request_id:requestID})
         })
@@ -81,11 +93,14 @@ export async function runAction(input,emit,commands,fixture={}) {
       }catch{await route.abort().catch(()=>{})}
     })
     page=await context.newPage()
+    page.on('pageerror',()=>diagnostic('page_error','verification_resource'))
     context.on('page',p=>{const previous=page;page=p;p.on('close',()=>{if(page===p&&!previous.isClosed())page=previous})})
-    await page.goto(base,{waitUntil:'networkidle',timeout:45000})
+    progress('page_loading')
+    heartbeat=setInterval(()=>{if(!finished&&!closed)emit({type:'progress',stage,elapsed_ms:Date.now()-stageAt,waiting:true})},30000)
+    await page.goto(base,{waitUntil:'load',timeout:45000})
     // Same retrievePaymentIntent -> identity/status check -> handleNextAction
     // as the supplied page. Only its initial continue button is automated.
-    await page.locator('#start').click()
+    await page.locator('#start').click({timeout:10000,noWaitAfter:true})
     emit({type:'ready'})
     if(!input.automatic)screenTimer=setInterval(async()=>{
       if(frameBusy||finished||closed)return
@@ -96,7 +111,7 @@ export async function runAction(input,emit,commands,fixture={}) {
     if(fixture.ready)await fixture.ready(page)
     await done
   }finally{
-    closed=true;clearInterval(screenTimer);clearTimeout(timer)
+    closed=true;clearInterval(screenTimer);clearInterval(heartbeat);clearTimeout(timer)
     for(const resolve of guards.values())resolve(false)
     guards.clear()
     await browser?.close()

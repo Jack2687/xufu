@@ -42,6 +42,11 @@ type actionEvent struct {
 	Image     string `json:"image"`
 	Outcome   string `json:"outcome"`
 	Code      string `json:"code"`
+	Stage     string `json:"stage"`
+	Resource  string `json:"resource"`
+	Status    int    `json:"status"`
+	ElapsedMS int64  `json:"elapsed_ms"`
+	Waiting   bool   `json:"waiting"`
 }
 type actionProcess interface {
 	Events() <-chan actionEvent
@@ -309,29 +314,69 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) (
 	v.mu.Unlock()
 	completed := false
 	runtimeCode := "action_interrupted"
+	// Browser resources arrive concurrently. Share only an in-flight check;
+	// never reuse a completed IP check or block the IPC reader behind network IO.
+	guardDone := make(chan error, 1)
+	pendingGuards := []int{}
+	var terminal *actionEvent
+	eventStream := process.Events()
 events:
 	for {
 		var e actionEvent
-		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				runtimeCode = "action_timeout"
-			}
-			break events
-		case event, ok := <-process.Events():
-			if !ok {
+		if terminal != nil && len(pendingGuards) == 0 {
+			e, terminal = *terminal, nil
+		} else {
+			select {
+			case <-ctx.Done():
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					runtimeCode = "action_timeout"
+				}
 				break events
+			case guardErr := <-guardDone:
+				if guardErr != nil {
+					runtimeCode = cslive.ErrorCode(guardErr)
+					break events
+				}
+				for _, id := range pendingGuards {
+					if process.Send(actionCommand{Type: "guard", RequestID: id, Allow: true}) != nil {
+						break events
+					}
+				}
+				pendingGuards = nil
+				continue
+			case event, ok := <-eventStream:
+				if !ok {
+					if len(pendingGuards) == 0 {
+						break events
+					}
+					eventStream = nil
+					event = actionEvent{Type: "interrupted"}
+				}
+				e = event
 			}
-			e = event
 		}
 		if e.Type == "guard" {
-			if err := r.guardIP(ctx, probe); err != nil {
-				runtimeCode = cslive.ErrorCode(err)
+			if len(pendingGuards) >= 256 {
+				runtimeCode = "action_guard_overloaded"
 				break events
 			}
-			if process.Send(actionCommand{Type: "guard", RequestID: e.RequestID, Allow: true}) != nil {
-				break events
+			pendingGuards = append(pendingGuards, e.RequestID)
+			if len(pendingGuards) == 1 {
+				go func() {
+					check, stop := context.WithTimeout(ctx, 10*time.Second)
+					defer stop()
+					guardDone <- r.guardIP(check, probe)
+				}()
 			}
+			continue
+		}
+		if len(pendingGuards) > 0 && (e.Type == "result" || e.Type == "error" || e.Type == "timeout" || e.Type == "interrupted") {
+			terminal, eventStream = &e, nil
+			continue
+		}
+		if e.Type == "progress" || e.Type == "diagnostic" {
+			r.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "verification", At: time.Now().UTC(), Status: e.Status,
+				Details: M{"sdk_stage": e.Stage, "sdk_resource": e.Resource, "sdk_event": e.Type, "sdk_issue": e.Code, "sdk_wait_ms": e.ElapsedMS, "sdk_waiting": e.Waiting}})
 			continue
 		}
 		v.mu.Lock()
@@ -355,7 +400,7 @@ events:
 			r.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "verification", At: time.Now().UTC(), Elapsed: time.Since(started), Details: M{"sdk_outcome": safeActionOutcome(e.Outcome), "sdk_code": v.code}})
 		}
 		v.mu.Unlock()
-		if completed || e.Type == "error" || e.Type == "timeout" {
+		if completed || e.Type == "error" || e.Type == "timeout" || e.Type == "interrupted" {
 			break events
 		}
 	}

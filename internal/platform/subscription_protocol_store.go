@@ -118,7 +118,7 @@ func (r *protocolRun) save(cp cslive.Checkpoint) error {
 			}
 		}
 	}
-	if link := str(cp.Metadata, "hosted_url"); validCheckoutURL(link) {
+	if link := protocolCheckoutURL(cp); link != "" {
 		linkEnc, err := r.a.encrypt(link)
 		if err != nil {
 			return err

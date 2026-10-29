@@ -73,6 +73,10 @@ func safeDiagnosticDetails(input M) M {
 	out := M{}
 	for k, v := range input {
 		switch k {
+		case "sdk_stage", "sdk_resource", "sdk_event", "sdk_issue":
+			if s := safeActionDiagnostic(k, v); s != "" {
+				out[k] = s
+			}
 		case "sdk_code":
 			if s, ok := v.(string); ok {
 				out[k] = safeActionCode(s)
@@ -97,11 +101,11 @@ func safeDiagnosticDetails(input M) M {
 			if s, ok := v.(string); ok && (s == "charged" || s == "not_charged" || s == "action_required" || s == "authorized" || s == "pending" || s == "unknown") {
 				out[k] = s
 			}
-		case "sdk_has_stripe_js", "sdk_has_3ds_source":
+		case "sdk_has_stripe_js", "sdk_has_3ds_source", "sdk_waiting":
 			if b, ok := v.(bool); ok {
 				out[k] = b
 			}
-		case "dns_ms", "connect_ms", "tls_ms", "first_byte_ms", "connection_ready_ms", "request_write_ms", "response_wait_ms", "network_stage_elapsed_ms", "request_attempt":
+		case "dns_ms", "connect_ms", "tls_ms", "first_byte_ms", "connection_ready_ms", "request_write_ms", "response_wait_ms", "network_stage_elapsed_ms", "request_attempt", "sdk_wait_ms":
 			var n int64
 			switch x := v.(type) {
 			case int:

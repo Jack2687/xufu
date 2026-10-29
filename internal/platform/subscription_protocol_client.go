@@ -184,7 +184,11 @@ func (r *protocolRun) progress(p cslive.Progress) {
 	if started, ok := r.stageStarted[phase]; ok {
 		elapsed = time.Since(started)
 	}
-	r.a.paymentTrace(r.ctx, r.id, phase, state, protocolPublicCode(p.Code), elapsed)
+	code := protocolPublicCode(p.Code)
+	if phase == "confirming" && p.Code == "action_required" {
+		state, code = "running", "verification_continuing"
+	}
+	r.a.paymentTrace(r.ctx, r.id, phase, state, code, elapsed)
 }
 
 func (r *protocolRun) event(event map[string]any) {
@@ -214,7 +218,14 @@ func (r *protocolRun) event(event map[string]any) {
 			details[dest] = v
 		}
 	}
-	r.a.enqueueDiagnostic(providerDiagnostic{Order: r.id, Phase: phase, Code: protocolPublicCode(str(event, "errorCode")), Status: int(protocolEventNumber(event["status"])), RequestID: requestID,
+	code := protocolPublicCode(str(event, "errorCode"))
+	if kind == "http_request" && str(event, "errorCode") == "subscription_not_found" && phase == "account_check" {
+		code = "subscription_absent"
+	}
+	if details["payment_state"] == "action_required" {
+		code = "verification_continuing"
+	}
+	r.a.enqueueDiagnostic(providerDiagnostic{Order: r.id, Phase: phase, Code: code, Status: int(protocolEventNumber(event["status"])), RequestID: requestID,
 		Elapsed: time.Duration(protocolEventNumber(event["durationMs"])) * time.Millisecond, At: time.Now().UTC(), Details: safeDiagnosticDetails(details)})
 }
 
