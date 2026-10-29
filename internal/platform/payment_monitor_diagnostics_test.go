@@ -85,3 +85,38 @@ func TestProtocolMonitorDistinguishesNormalAbsentAndAutoHandoff(t *testing.T) {
 	}
 	r.finish(cslive.Result{Checkpoint: cp})
 }
+
+func TestActionNetworkDiagnosticPrivacyAndPersistence(t *testing.T) {
+	h, r, cp := nativeFixture(t, false)
+	fields := M{"sdk_event": "diagnostic", "sdk_issue": "resource_failed", "sdk_host": "api.stripe.com", "sdk_route": "payment_intent", "sdk_resource_key": "0123456789abcdef", "sdk_request": int64(7), "sdk_method": "GET", "sdk_request_type": "fetch", "sdk_network_error": "ERR_TUNNEL_CONNECTION_FAILED", "sdk_duration_ms": int64(15000), "sdk_guard_ms": int64(1234), "sdk_pending": int64(1), "url": "https://private.example/SECRET", "body": "SECRET"}
+	h.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "verification", At: time.Now(), Details: fields})
+	admin := expect(t, h.request("GET", "/api/admin/orders/"+r.id, nil, h.admin, nil), 200)
+	trace := admin["trace"].([]any)
+	var found bool
+	for _, item := range trace {
+		row := item.(M)
+		d := row["diagnostics"].(M)
+		if d["sdk_network_error"] == "ERR_TUNNEL_CONNECTION_FAILED" {
+			found = true
+			if d["sdk_host"] != "api.stripe.com" || d["sdk_guard_ms"] != float64(1234) || d["url"] != nil || d["body"] != nil {
+				t.Fatal("unsafe or missing diagnostic")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("network diagnostic missing")
+	}
+	for _, path := range []string{"/api/orders/", "/api/v1/orders/"} {
+		response := h.request("GET", path+r.id, nil, h.member, nil)
+		expect(t, response, 200)
+		if strings.Contains(response.Body.String(), "sdk_host") || strings.Contains(response.Body.String(), "ERR_TUNNEL") {
+			t.Fatal("customer network diagnostic leak")
+		}
+	}
+	for _, key := range []string{"sdk_host", "sdk_route", "sdk_resource_key", "sdk_network_error", "sdk_method", "sdk_request_type"} {
+		if len(safeDiagnosticDetails(M{key: "pi_private_secret_token"})) != 0 {
+			t.Fatal("arbitrary diagnostic accepted", key)
+		}
+	}
+	r.finish(cslive.Result{Checkpoint: cp})
+}

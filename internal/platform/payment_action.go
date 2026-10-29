@@ -47,6 +47,7 @@ type actionEvent struct {
 	Status    int    `json:"status"`
 	ElapsedMS int64  `json:"elapsed_ms"`
 	Waiting   bool   `json:"waiting"`
+	Details   M      `json:"details"`
 }
 type actionProcess interface {
 	Events() <-chan actionEvent
@@ -374,9 +375,14 @@ events:
 			terminal, eventStream = &e, nil
 			continue
 		}
-		if e.Type == "progress" || e.Type == "diagnostic" {
-			r.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "verification", At: time.Now().UTC(), Status: e.Status,
-				Details: M{"sdk_stage": e.Stage, "sdk_resource": e.Resource, "sdk_event": e.Type, "sdk_issue": e.Code, "sdk_wait_ms": e.ElapsedMS, "sdk_waiting": e.Waiting}})
+		if e.Type == "progress" || e.Type == "diagnostic" || e.Type == "network" {
+			details := safeDiagnosticDetails(e.Details)
+			for key, value := range (M{"sdk_stage": e.Stage, "sdk_resource": e.Resource, "sdk_event": e.Type, "sdk_issue": e.Code, "sdk_wait_ms": e.ElapsedMS, "sdk_waiting": e.Waiting}) {
+				details[key] = value
+			}
+			// Resource completion bursts must not block the IPC reader or delay
+			// original-IP guard replies behind diagnostic database writes.
+			r.a.enqueueDiagnostic(providerDiagnostic{Order: r.id, Phase: "verification", At: time.Now().UTC(), Status: e.Status, Details: details})
 			continue
 		}
 		v.mu.Lock()

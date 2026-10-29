@@ -91,3 +91,25 @@ test('automatic SDK waits for its own result; timeout never fakes an interaction
  assert.equal(events.filter(e=>e.type==='timeout').length,1)
  assert.equal(events.some(e=>e.type==='result'||e.type==='frame'),false)
 })
+
+test('browser resource failures retain safe network details without payment secrets',{timeout:20000},async()=>{
+ const events=[]
+ await runAction({...input(),automatic:true},v=>events.push(v),{onCommand(){}},{
+  route:async route=>{
+   if(route.request().url()==='https://js.stripe.com/v3/'){
+    await route.fulfill({contentType:'application/javascript',body:`window.Stripe=()=>({retrievePaymentIntent:async()=>({paymentIntent:{id:'pi_Fixture',status:'requires_action'}}),handleNextAction:async()=>{try{await fetch('https://api.stripe.com/v1/payment_intents/pi_Private?client_secret=PRIVATE_QUERY')}catch{}await new Promise(r=>setTimeout(r,100));return {error:{code:'api_connection_error'}}}})`})
+   }else await route.abort('connectionreset')
+   return true
+  }
+ })
+ const failure=events.find(e=>e.code==='resource_failed')
+ assert.equal(failure?.details.sdk_network_error,'ERR_CONNECTION_RESET')
+ assert.equal(failure?.details.sdk_host,'api.stripe.com')
+ assert.equal(failure?.details.sdk_request_type,'fetch')
+ assert.equal(failure?.details.sdk_route,'payment_intent')
+ assert.ok(failure.details.sdk_request>0)
+ assert.ok(failure.details.sdk_duration_ms>=0)
+ assert.equal(JSON.stringify(events).includes('PRIVATE_QUERY'),false)
+ assert.equal(JSON.stringify(events).includes('pi_Private'),false)
+ assert.ok(events.some(e=>e.type==='network'&&e.status===200))
+})

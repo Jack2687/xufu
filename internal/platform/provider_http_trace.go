@@ -73,8 +73,12 @@ func safeDiagnosticDetails(input M) M {
 	out := M{}
 	for k, v := range input {
 		switch k {
-		case "sdk_stage", "sdk_resource", "sdk_event", "sdk_issue":
+		case "sdk_stage", "sdk_resource", "sdk_event", "sdk_issue", "sdk_host", "sdk_route", "sdk_method", "sdk_request_type", "sdk_network_error":
 			if s := safeActionDiagnostic(k, v); s != "" {
+				out[k] = s
+			}
+		case "sdk_resource_key":
+			if s, ok := v.(string); ok && actionResourceKey.MatchString(s) {
 				out[k] = s
 			}
 		case "sdk_code":
@@ -105,7 +109,7 @@ func safeDiagnosticDetails(input M) M {
 			if b, ok := v.(bool); ok {
 				out[k] = b
 			}
-		case "dns_ms", "connect_ms", "tls_ms", "first_byte_ms", "connection_ready_ms", "request_write_ms", "response_wait_ms", "network_stage_elapsed_ms", "request_attempt", "sdk_wait_ms":
+		case "dns_ms", "connect_ms", "tls_ms", "first_byte_ms", "connection_ready_ms", "request_write_ms", "response_wait_ms", "network_stage_elapsed_ms", "request_attempt", "sdk_wait_ms", "sdk_duration_ms", "sdk_guard_ms", "sdk_connect_ms", "sdk_tls_ms", "sdk_response_ms", "sdk_request", "sdk_requests", "sdk_completed", "sdk_failed", "sdk_pending":
 			var n int64
 			switch x := v.(type) {
 			case int:
