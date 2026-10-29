@@ -107,7 +107,7 @@ func (r *protocolRun) guardIP(ctx context.Context, probe *http.Client) error {
 	}
 	check, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	v, err := providerJSON(check, probe, "GET", "https://ipinfo.io/json", http.Header{"Accept": {"application/json"}}, nil, false)
+	v, err := providerJSON(r.a.proxyProbeContext(check, r.id), probe, "GET", "https://ipinfo.io/json", http.Header{"Accept": {"application/json"}}, nil, false)
 	if err != nil {
 		return cslive.Failure("proxy_session_unavailable")
 	}

@@ -1,9 +1,17 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {chromium} from 'playwright'
-import {allowedHost,checkoutIdentity,confirmMatches,snapshot,run,paymentProxy} from './payment-browser.mjs'
+import {allowedHost,checkoutIdentity,confirmMatches,snapshot,run,paymentProxy,paymentDiagnostics} from './payment-browser.mjs'
 
 const id='cs_test_QA123'
+test('hosted diagnostics distinguish pending approval and SDK action without credentials',()=>{
+ const result=paymentDiagnostics({status:'open',payment_status:'unpaid',customer_email:'PRIVATE_EMAIL',submission_attempt:{state:'requires_approval',payment_intent:{id:'pi_PRIVATE',status:'requires_action',client_secret:'PRIVATE_SECRET',next_action:{type:'use_stripe_sdk',use_stripe_sdk:{type:'intent_confirmation_challenge',stripe_js:'https://private.example/SECRET'}}}},error:{payment_intent:{status:'requires_payment_method',last_payment_error:{code:'card_declined',decline_code:'insufficient_funds',message:'PRIVATE'}}}})
+ assert.equal(result.find(x=>x.diagnostic_source==='submission_attempt').raw_state,'requires_approval')
+ assert.deepEqual(result.find(x=>x.diagnostic_source==='submission_payment_intent'),{diagnostic_source:'submission_payment_intent',raw_status:'requires_action',next_action_type:'use_stripe_sdk',sdk_action_type:'intent_confirmation_challenge',sdk_has_stripe_js:true,sdk_has_3ds_source:false})
+ assert.equal(result.find(x=>x.diagnostic_source==='error_payment_intent').decline_code,'insufficient_funds')
+ assert.equal(JSON.stringify(result).includes('PRIVATE'),false)
+ assert.deepEqual(paymentDiagnostics({status:'PRIVATE_FREE_TEXT'}),[{diagnostic_source:'response',raw_status:'redacted'}])
+})
 function body({paid=false,tax=true,amount=1500,action=false}={}){return {id:'ppage_QA123',object:'checkout.session',session_id:id,currency:'usd',total_summary:{due:amount},state:paid?'succeeded':'active',status:paid?'complete':'open',payment_status:paid?'paid':'unpaid',tax_context:{automatic_tax_enabled:true},tax_meta:{status:tax?'complete':'requires_location_inputs'},payment_intent:paid?{status:'succeeded'}:action?{status:'requires_action'}:null}}
 test('payment identity, quote and result require current session and final tax',()=>{
  assert.equal(checkoutIdentity('https://pay.openai.com/c/pay/'+id),id)

@@ -46,6 +46,25 @@ export function confirmMatches(url, form, id, quote) {
 }
 const pause = ms=>new Promise(r=>setTimeout(r,ms))
 const safePaymentCodes=new Set(['card_declined','expired_card','incorrect_cvc','incorrect_number','incorrect_zip','insufficient_funds','do_not_honor','generic_decline','authentication_required','payment_intent_authentication_failure','processing_error','billing_automatic_tax_unrecognized_customer_location'])
+const diagnosticStatuses=new Set(['open','complete','expired','paid','unpaid','no_payment_required','succeeded','processing','pending','requires_payment_method','requires_confirmation','requires_action','requires_capture','requires_approval','canceled','cancelled','declined','failed','blocked'])
+const diagnosticActions=new Set(['intent_confirmation_challenge','use_stripe_sdk','redirect_to_url','three_d_secure_2_fingerprint','three_d_secure_2_challenge','three_d_secure_2_source','stripe_3ds2_fingerprint','stripe_3ds2_challenge'])
+export function paymentDiagnostics(body) {
+  const rows=[]
+  for(const [source,node] of [['response',body],['payment_intent',body?.payment_intent],['submission_attempt',body?.submission_attempt],['submission_payment_intent',body?.submission_attempt?.payment_intent],['error_payment_intent',body?.error?.payment_intent]]) {
+    if(!node||typeof node!=='object')continue
+    const d={diagnostic_source:source}
+    for(const [key,value] of [['raw_status',node.status],['raw_state',node.state],['raw_payment_status',node.payment_status]])if(typeof value==='string')d[key]=diagnosticStatuses.has(value)?value:'redacted'
+    const action=node.next_action,sdk=action?.use_stripe_sdk
+    if(action?.type)d.next_action_type=diagnosticActions.has(action.type)?action.type:'redacted'
+    if(sdk?.type)d.sdk_action_type=diagnosticActions.has(sdk.type)?sdk.type:'redacted'
+    if(sdk){d.sdk_has_stripe_js=!!sdk.stripe_js;d.sdk_has_3ds_source=!!sdk.three_d_secure_2_source}
+    const error=node.last_payment_error||node.error
+    if(safePaymentCodes.has(error?.code))d.provider_code=error.code
+    if(safePaymentCodes.has(error?.decline_code))d.decline_code=error.decline_code
+    if(Object.keys(d).length>1)rows.push(d)
+  }
+  return rows
+}
 
 export async function run(input, commands, emit, dependencies={}) {
   let finished=false,observations=Promise.resolve()
@@ -124,6 +143,7 @@ export async function run(input, commands, emit, dependencies={}) {
       const timing=res.request().timing(),elapsed=Number.isFinite(timing.responseEnd)&&timing.responseEnd>=0?Math.round(timing.responseEnd):0
       emit({type:'diagnostic',phase:u.pathname.endsWith('/confirm')?'confirming':quote?'checking':'pricing',http_status:res.status(),request_id:/^req_[A-Za-z0-9]{8,80}$/.test(requestID)?requestID:'',code:res.status()>=400?'request_rejected':'',elapsed_ms:elapsed,diagnostics:details})
       if(!related)return
+      for(const diagnostics of paymentDiagnostics(body))emit({type:'diagnostic',phase:quote?'checking':'pricing',http_status:res.status(),diagnostics})
       if(u.pathname===`/v1/payment_pages/${id}/confirm`&&res.status()===402&&body?.error?.type==='card_error'&&['card_declined','expired_card','incorrect_cvc','incorrect_number'].includes(body.error.code)&&(!body.error.payment_intent||body.error.payment_intent.status==='requires_payment_method'))declined=true
       if(res.status()!==200)return
       const s=snapshot(body,id)

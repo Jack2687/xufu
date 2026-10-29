@@ -37,6 +37,19 @@ func (a *App) providerContext(ctx context.Context, id, phase string) context.Con
 		a.enqueueDiagnostic(d)
 	})
 }
+
+// An exit probe must not obscure whether a stopped payment was caused by a
+// timeout, a proxy tunnel failure or an HTTP rejection. Successful probes are
+// frequent during SDK resource loading, so retain only failed probe diagnostics.
+func (a *App) proxyProbeContext(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, providerDiagnosticKey{}, func(d providerDiagnostic) {
+		if d.Code == "" && d.Status < http.StatusBadRequest {
+			return
+		}
+		d.Order, d.Phase = id, "network"
+		a.enqueueDiagnostic(d)
+	})
+}
 func (a *App) enqueueDiagnostic(d providerDiagnostic) {
 	select {
 	case a.providerDiagnostics <- d:
