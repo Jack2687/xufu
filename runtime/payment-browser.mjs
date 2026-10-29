@@ -4,9 +4,12 @@ import readline from 'node:readline'
 import {pathToFileURL} from 'node:url'
 import fs from 'node:fs'
 import {isIP} from 'node:net'
+import {customIdentity,loginCookies,CustomPayment} from './payment-custom.mjs'
 
 const currencies = new Set(['php','usd','jpy','sgd','gbp','egp','try'])
 export function checkoutIdentity(raw) {
+  const custom=customIdentity(raw)
+  if(custom)return custom.id
   const u = new URL(raw)
   if (u.protocol !== 'https:' || u.username || u.password || u.port || !['pay.openai.com','checkout.stripe.com'].includes(u.hostname)) throw Error('unsupported_checkout')
   const m = u.pathname.match(/^\/(?:c\/)?pay\/(cs_(?:live|test)_[a-zA-Z0-9]+)$/)
@@ -14,7 +17,7 @@ export function checkoutIdentity(raw) {
   return m[1]
 }
 export function allowedHost(host) {
-  return ['pay.openai.com','checkout.stripe.com','chatgpt.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
+  return ['pay.openai.com','checkout.stripe.com','chatgpt.com','cdn.oaistatic.com','tcr9i.chat.openai.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
 }
 export function paymentProxy(input) {
   const p=input.proxy
@@ -45,21 +48,27 @@ const pause = ms=>new Promise(r=>setTimeout(r,ms))
 const safePaymentCodes=new Set(['card_declined','expired_card','incorrect_cvc','incorrect_number','incorrect_zip','insufficient_funds','do_not_honor','generic_decline','authentication_required','payment_intent_authentication_failure','processing_error','billing_automatic_tax_unrecognized_customer_location'])
 
 export async function run(input, commands, emit, dependencies={}) {
+  let finished=false,observations=Promise.resolve()
+  const send=emit
+  emit=e=>{if(!finished)send(e)}
   let browser, sent=false, permit=false, latest=null, changedAt=0, quote=null, blocked='', responseCount=0, declined=false, networkFailed=false
   const stage = code=>emit({type:'stage',code})
-  const done = (state,code='')=>emit({type:'result',state,code,sent,amount:latest?.amount||0,currency:latest?.currency||'',evidence:latest?.evidence})
+  const done = (state,code='')=>{emit({type:'result',state,code,sent,amount:latest?.amount||0,currency:latest?.currency||'',evidence:latest?.evidence});finished=true}
   let quoteTimer
   const abort=()=>{browser?.close().catch(()=>{})}
   dependencies.signal?.addEventListener('abort',abort,{once:true})
   try {
     if(dependencies.signal?.aborted)throw Error('cancelled')
     const id=checkoutIdentity(input.url)
+    const identity=customIdentity(input.url),custom=identity?new CustomPayment(identity):null
     const proxy=paymentProxy(input)
     const {chromium}=dependencies.playwright || await import('playwright')
     const chrome=process.env.PAYMENT_CHROME_PATH || (process.platform==='win32' && fs.existsSync('C:/Program Files/Google/Chrome/Application/chrome.exe')?'C:/Program Files/Google/Chrome/Application/chrome.exe':undefined)
     browser=await chromium.launch({headless:true,executablePath:chrome,proxy,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp','--disable-background-networking','--disable-breakpad']})
     if(dependencies.signal?.aborted)throw Error('cancelled')
     const ctx=await browser.newContext({locale:'en-US',timezoneId:'America/New_York',serviceWorkers:'block',acceptDownloads:false,proxy})
+    if(custom)await ctx.addCookies(loginCookies(input.session_cookies))
+    input.session_cookies=''
     const checkExit=async()=>{
       if(Date.now()>=input.proxy_expires_at)throw Error('proxy_session_expired')
       let ip
@@ -77,7 +86,17 @@ export async function run(input, commands, emit, dependencies={}) {
       const req=route.request(), u=new URL(req.url())
       if(Date.now()>=input.proxy_expires_at){blocked='proxy_session_expired';return route.abort()}
       if(u.protocol!=='https:' || !allowedHost(u.hostname) || u.username || u.password || (u.port&&u.port!=='443')) return route.abort()
-      if(req.method()==='POST' && /\/(confirm|pay|capture)$/.test(u.pathname)) {
+      if(custom) {
+        // A page may advance as soon as headers arrive. Finish observing the
+        // previous response before authorizing its next dependent operation.
+        await observations
+        const decision=custom.guard(req,input.mode,permit,quote,latest)
+        if(!decision.ok){blocked='duplicate_blocked';return route.abort()}
+        if(decision.submitted) {
+          try{await checkExit()}catch(e){blocked=e.message;return route.abort()}
+          sent=true;emit({type:'submitted'})
+        }
+      } else if(req.method()==='POST' && /\/(confirm|pay|capture)$/.test(u.pathname)) {
         if(input.mode==='check'||!permit||sent) {blocked='duplicate_blocked';return route.abort()}
         if(!latest || latest.amount!==quote.amount||latest.currency!==quote.currency||!latest.taxReady||!confirmMatches(req.url(),new URLSearchParams(req.postData()||''),id,quote)) {blocked='amount_changed';return route.abort()}
         sent=true
@@ -87,8 +106,14 @@ export async function run(input, commands, emit, dependencies={}) {
     })
     const page=await ctx.newPage()
     page.on('requestfailed',req=>{if(['api.stripe.com','js.stripe.com'].includes(new URL(req.url()).hostname)&&/TUNNEL|PROXY_CONNECTION/.test(req.failure()?.errorText||''))networkFailed=true})
-    page.on('response',async res=>{
+    page.on('response',res=>{observations=observations.then(async()=>{
       const u=new URL(res.url())
+      if(custom&&['chatgpt.com','api.stripe.com'].includes(u.hostname)) {
+        const data=await res.json().catch(()=>null)
+        const s=custom.observe(res.request(),data,res.status(),snapshot)
+        if(s&&s!==latest){latest=s;changedAt=Date.now();responseCount++}
+        if(u.hostname==='chatgpt.com')return
+      }
       if(u.hostname!=='api.stripe.com')return
       const related=u.pathname.startsWith(`/v1/payment_pages/${id}`)
       if(!related&&u.pathname!=='/v1/payment_methods')return
@@ -103,7 +128,7 @@ export async function run(input, commands, emit, dependencies={}) {
       if(res.status()!==200)return
       const s=snapshot(body,id)
       if(s){latest=s;changedAt=Date.now();responseCount++}
-    })
+    }).catch(()=>{})})
     const navigate=()=>page.goto(input.url,{waitUntil:'domcontentloaded',timeout:Math.min(input.prepare_seconds*1000,60000)})
     stage('opening')
     await navigate()
@@ -129,14 +154,14 @@ export async function run(input, commands, emit, dependencies={}) {
       if(required)throw Error('checkout_fields_unavailable')
       return false
     }
-    await field(['#cardNumber','input[name="cardnumber"]','input[name="cardNumber"]','input[autocomplete="cc-number"]'],input.card.number)
-    await field(['#cardExpiry','input[name="exp-date"]','input[name="cardExpiry"]','input[autocomplete="cc-exp"]'],`${input.card.month}/${input.card.year.slice(-2)}`)
+    await field(['#cardNumber','input[name="cardnumber"]','input[name="cardNumber"]','input[name="number"]','input[autocomplete="cc-number"]'],input.card.number)
+    await field(['#cardExpiry','input[name="exp-date"]','input[name="cardExpiry"]','input[name="expiry"]','input[autocomplete="cc-exp"]'],`${input.card.month}/${input.card.year.slice(-2)}`)
     await field(['#cardCvc','input[name="cvc"]','input[name="cardCvc"]','input[autocomplete="cc-csc"]'],input.card.cvc)
     input.card={}
     stage('billing')
     await field(['#email','input[type="email"]'],input.email,false)
-    await field(['#billingName','input[name="billingName"]','input[autocomplete="cc-name"]'],`${input.billing.first_name} ${input.billing.last_name}`)
-    await field(['#billingCountry','select[name="billingCountry"]','select[autocomplete="billing country"]'],'US')
+    await field(['#billingName','input[name="billingName"]','input[autocomplete="cc-name"]','input[name="name"]','input[autocomplete="name"]'],`${input.billing.first_name} ${input.billing.last_name}`)
+    await field(['#billingCountry','select[name="billingCountry"]','select[autocomplete="billing country"]','select[name="country"]'],'US')
     const manual=page.getByText(/enter address manually/i).first()
     if(await manual.isVisible().catch(()=>false)) await manual.click()
     const beforeAddress=responseCount
@@ -180,12 +205,12 @@ export async function run(input, commands, emit, dependencies={}) {
     return done(sent?'review':'failed',sent?'result_unconfirmed':'verification_required')
   } catch (e) {
     // Never propagate exception strings: Playwright often includes filled values.
-    const safeCodes=new Set(['unsupported_checkout','quote_unavailable','checkout_fields_unavailable','proxy_session_unavailable','proxy_session_expired','proxy_session_changed'])
+    const safeCodes=new Set(['invalid_session','unsupported_checkout','quote_unavailable','checkout_fields_unavailable','proxy_session_unavailable','proxy_session_expired','proxy_session_changed'])
     return done(sent?'review':'failed',sent?'result_unconfirmed':safeCodes.has(blocked)?blocked:networkFailed?'network_connection_failed':safeCodes.has(e.message)?e.message:'preparation_failed')
   } finally {
     clearTimeout(quoteTimer)
     dependencies.signal?.removeEventListener('abort',abort)
-    input.card={};input.billing={};input.proxy={}
+    input.card={};input.billing={};input.proxy={};input.session_cookies=''
     await browser?.close().catch(()=>{})
   }
 }

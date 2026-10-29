@@ -128,11 +128,12 @@ func (a *App) checkSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	flow := configuredSubscriptionFlow(a.config(r.Context(), "payment"))
-	if v.Workflow == "subscription" && !validSubscriptionFlow(flow) {
+	usesFlow := v.Workflow == "subscription" || v.Workflow == "checkout"
+	if usesFlow && !validSubscriptionFlow(flow) {
 		fail(w, 409, "订阅办理流程配置无效，请联系运营")
 		return
 	}
-	info, e := inspectSessionMode(v.Session, v.Workflow == "subscription" && flow == subscriptionFlowCSLive)
+	info, e := inspectSessionMode(v.Session, usesFlow && flow == subscriptionFlowCSLive)
 	if e != nil {
 		fail(w, 400, e.Error())
 		return

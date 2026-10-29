@@ -15,14 +15,18 @@ import (
 	"time"
 )
 
-// These operations reproduce generator.py's hosted/custom checkout requests.
+// These operations reproduce generator.py's long/short checkout requests.
 // No card authorization, capture, subscription cancellation or payment success
 // inference is performed here. Raw upstream responses never leave this module.
 const checkoutEndpoint = "https://chatgpt.com/backend-api/payments/checkout"
 const iosCheckoutUA = "ChatGPT/1.2026.196 (iOS 18.5; iPhone17,2; build 2682191628)"
 const webCheckoutUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+const legacyCheckoutPublishableKey = "pk_live_51HOrSwC6h1nxGoI3lTAgRjYVrz4dU3fVOabyCcKR3pbEJguCVAlqCxdxCUvoRh1XWwRacViovU3kLKvpkjh7IqkW00iXQsjo3n"
+
+var hostedCheckoutID = regexp.MustCompile(`^cs_(?:live|test)_[A-Za-z0-9]+$`)
 
 type checkoutInput struct {
+	CheckoutType                      string                     `json:"-"`
 	BeforeCreate                      func(*checkoutInput) error `json:"-"`
 	ObserveIP                         func(string) error         `json:"-"`
 	AccessToken                       string                     `json:"access_token"`
@@ -143,17 +147,13 @@ func checkoutPayload(in checkoutInput) (M, error) {
 	if in.Mode != "long" && in.Mode != "short" {
 		return nil, errors.New("unsupported checkout mode")
 	}
-	ui, entry := "hosted", ""
+	payload := M{"billing_details": M{"country": in.Country, "currency": currency}, "checkout_ui_mode": "hosted", "cancel_url": "https://chatgpt.com/#pricing"}
 	if in.Mode == "short" {
-		ui = "custom"
-		entry = "all_plans_pricing_modal"
-		if strings.HasPrefix(in.Product, "team") {
-			entry = "team_workspace_purchase_modal"
+		payload["checkout_ui_mode"] = "custom"
+		payload["entry_point"] = "all_plans_pricing_modal"
+		if in.Product == "team" || in.Product == "team_premium" {
+			payload["entry_point"] = "team_workspace_purchase_modal"
 		}
-	}
-	payload := M{"billing_details": M{"country": in.Country, "currency": currency}, "checkout_ui_mode": ui, "cancel_url": "https://chatgpt.com/#pricing"}
-	if entry != "" {
-		payload["entry_point"] = entry
 	}
 	switch in.Product {
 	case "pro":
@@ -192,6 +192,24 @@ func validCheckoutURL(raw string) bool {
 	return false
 }
 
+func validHostedCheckoutURL(raw string) bool {
+	if !validCheckoutURL(raw) {
+		return false
+	}
+	u, _ := url.Parse(raw)
+	return u.Hostname() != "chatgpt.com" && hostedCheckoutID.MatchString(path.Base(u.Path)) && (u.Path == "/c/pay/"+path.Base(u.Path) || u.Path == "/pay/"+path.Base(u.Path))
+}
+
+var customCheckoutPath = regexp.MustCompile(`^/checkout/[a-z0-9_]{2,64}/(?:oaics_|cs_live_)[A-Za-z0-9]+$`)
+
+func validCustomCheckoutURL(raw string) bool {
+	if !validCheckoutURL(raw) {
+		return false
+	}
+	u, _ := url.Parse(raw)
+	return u.Host == "chatgpt.com" && u.RawQuery == "" && u.Fragment == "" && customCheckoutPath.MatchString(u.EscapedPath())
+}
+
 func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, beforeWrite func() error) (checkoutOutput, error) {
 	var out checkoutOutput
 	payload, e := checkoutPayload(in)
@@ -222,17 +240,19 @@ func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, bef
 		}
 	}
 	headers := http.Header{"Authorization": {"Bearer " + in.AccessToken}, "Accept": {"application/json"}, "Content-Type": {"application/json"}}
-	if in.Mode == "long" {
-		headers.Set("User-Agent", iosCheckoutUA)
-		headers.Set("OAI-Language", "zh-Hans")
-		headers.Set("OpenAI-Client-Type", "native")
-		headers.Set("OpenAI-Client-Name", "chatgpt-ios")
-		headers.Set("ChatGPT-Account-ID", in.AccountID)
-	} else {
+	if in.Mode == "short" {
 		headers.Set("User-Agent", webCheckoutUA)
 		headers.Set("Origin", "https://chatgpt.com")
 		headers.Set("Referer", "https://chatgpt.com/")
 		headers.Set("OAI-Language", "en-US")
+	} else {
+		headers.Set("User-Agent", iosCheckoutUA)
+		headers.Set("OAI-Language", "zh-Hans")
+		headers.Set("OpenAI-Client-Type", "native")
+		headers.Set("OpenAI-Client-Name", "chatgpt-ios")
+		if in.AccountID != "" {
+			headers.Set("ChatGPT-Account-ID", in.AccountID)
+		}
 	}
 	if e = beforeWrite(); e != nil {
 		return out, e
@@ -243,43 +263,58 @@ func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, bef
 		return out, e
 	}
 	cs := str(result, "checkout_session_id")
-	if cs == "" || len(cs) > 300 || (in.Mode == "long" && !strings.HasPrefix(cs, "cs_")) {
-		return out, checkoutFailure("invalid_response", false, true)
-	}
 	if in.Mode == "short" {
 		entity := str(result, "processor_entity")
 		if entity == "" {
 			entity = "openai_llc"
-			if in.Country == "GB" {
+			if in.Country == "GB" { // The only European region currently offered by this app.
 				entity = "openai_ie"
 			}
 		}
-		out.URL = "https://chatgpt.com/checkout/" + url.PathEscape(entity) + "/" + url.PathEscape(cs)
-	} else {
-		out.URL = str(result, "url")
-		if out.URL == "" {
-			pk := str(result, "publishable_key")
-			if !strings.HasPrefix(cs, "cs_") || !strings.HasPrefix(pk, "pk_") {
-				return out, checkoutFailure("invalid_response", false, true)
-			}
-			form := url.Values{"key": {pk}, "eid": {"NA"}, "browser_locale": {"en-US"}, "browser_timezone": {"Asia/Manila"}, "redirect_type": {"url"}}
-			hdr := http.Header{"Content-Type": {"application/x-www-form-urlencoded"}, "Accept": {"application/json"}, "Origin": {"https://pay.openai.com"}, "Referer": {"https://pay.openai.com/"}, "User-Agent": {webCheckoutUA}}
-			initialized, err := providerJSON(ctx, c, "POST", "https://api.stripe.com/v1/payment_pages/"+url.PathEscape(cs)+"/init", hdr, []byte(form.Encode()), true)
-			if err != nil {
-				return out, checkoutFailure("checkout_result_unknown", false, true)
-			}
-			out.URL = str(initialized, "stripe_hosted_url")
-			if out.URL == "" {
-				out.URL = str(initialized, "url")
-			}
-			// No guessed URL: incomplete responses remain unconfirmed.
+		out.URL = "https://chatgpt.com/checkout/" + entity + "/" + cs
+		if len(cs) > 300 || !validCustomCheckoutURL(out.URL) {
+			return checkoutOutput{}, checkoutFailure("invalid_response", false, true)
 		}
+		return out, nil
 	}
-	if !validCheckoutURL(out.URL) || strings.Contains(out.URL, in.AccessToken) {
+	if len(cs) > 300 || !hostedCheckoutID.MatchString(cs) {
+		return out, checkoutFailure("invalid_response", false, true)
+	}
+	if str(result, "tag") == "hosted_checkout_session" && str(result, "checkout_ui_mode") == "hosted" && validHostedCheckoutURL(str(result, "url")) {
+		out.URL = str(result, "url")
+	} else {
+		pk := str(result, "publishable_key")
+		if pk == "" {
+			pk = legacyCheckoutPublishableKey
+		}
+		if !strings.HasPrefix(pk, "pk_") {
+			return out, checkoutFailure("checkout_result_unknown", false, true)
+		}
+		form := url.Values{"key": {pk}, "eid": {"NA"}, "browser_locale": {"en-US"}, "browser_timezone": {"Asia/Manila"}, "redirect_type": {"url"}}
+		hdr := http.Header{"Content-Type": {"application/x-www-form-urlencoded"}, "Accept": {"application/json"}, "Origin": {"https://pay.openai.com"}, "Referer": {"https://pay.openai.com/"}, "User-Agent": {webCheckoutUA}}
+		initialized, err := providerJSON(ctx, c, "POST", "https://api.stripe.com/v1/payment_pages/"+url.PathEscape(cs)+"/init", hdr, []byte(form.Encode()), true)
+		if err != nil {
+			return out, checkoutFailure("checkout_result_unknown", false, true)
+		}
+		mode := str(initialized, "ui_mode")
+		if mode == "" {
+			mode = str(result, "checkout_ui_mode")
+		}
+		if mode != "hosted" || str(initialized, "success_url") == "" {
+			return out, checkoutFailure("checkout_result_unknown", false, true)
+		}
+		out.URL = str(initialized, "stripe_hosted_url")
+		if out.URL == "" {
+			out.URL = str(initialized, "url")
+		}
+		// An absent URL remains unconfirmed; never fabricate a payable link.
+	}
+	out.URL = strings.Replace(out.URL, "https://checkout.stripe.com/", "https://pay.openai.com/", 1)
+	if !validHostedCheckoutURL(out.URL) || (in.AccessToken != "" && strings.Contains(out.URL, in.AccessToken)) {
 		return checkoutOutput{}, checkoutFailure("checkout_result_unknown", false, true)
 	}
 	u, _ := url.Parse(out.URL)
-	if path.Base(u.Path) != cs || !regexp.MustCompile(`^(?:cs_(?:live|test)_|oaics_)[A-Za-z0-9]+$`).MatchString(cs) {
+	if path.Base(u.Path) != cs {
 		return checkoutOutput{}, checkoutFailure("checkout_result_unknown", false, true)
 	}
 	return out, nil

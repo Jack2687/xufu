@@ -34,7 +34,7 @@ func validateConfig(key string, v M) error {
 		"scheduler": {"paused", "max_parallel", "per_user_parallel", "retry_limit", "retry_delay_seconds", "task_timeout_seconds", "queue_limit", "default_country", "link_mode", "engine"},
 		"billing":   {"country", "allow_customer_edit", "address_templates"}, "tiers": {"items"},
 		"proxy":   {"default_id", "global_id", "match_country", "request_timeout_seconds"},
-		"payment": {"enabled", "subscription_flow", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit", "network_restart_limit", "activation_check_interval_seconds", "activation_check_limit"},
+		"payment": {"enabled", "subscription_flow", "checkout_type", "checkout_types", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit", "network_restart_limit", "activation_check_interval_seconds", "activation_check_limit"},
 	}
 	keys, ok := allowed[key]
 	if !ok {
@@ -54,7 +54,7 @@ func validateConfig(key string, v M) error {
 	}
 	for _, k := range keys {
 		if _, ok := v[k]; !ok {
-			if (key == "proxy" && k == "global_id") || (key == "payment" && (k == "network_restart_limit" || k == "subscription_flow")) {
+			if (key == "proxy" && k == "global_id") || (key == "payment" && (k == "network_restart_limit" || k == "subscription_flow" || k == "checkout_type" || k == "checkout_types")) {
 				continue
 			}
 			return bad("缺少配置字段：" + k)
@@ -82,6 +82,20 @@ func validateConfig(key string, v M) error {
 	}
 	switch key {
 	case "payment":
+		if value, present := v["checkout_types"]; present {
+			types, ok := value.(M)
+			if !ok || len(types) != len(checkoutProducts) {
+				return bad("请为每个订阅套餐选择长链或短链")
+			}
+			for _, product := range checkoutProducts {
+				if !validCheckoutType(str(types, product.ID)) {
+					return bad(product.Name + " 的结账链接类型须选择长链或短链")
+				}
+			}
+		}
+		if _, present := v["checkout_type"]; present && !validCheckoutType(str(v, "checkout_type")) {
+			return bad("结账链接类型须选择长链或短链")
+		}
 		if _, present := v["subscription_flow"]; present && !validSubscriptionFlow(str(v, "subscription_flow")) {
 			return bad("订阅办理流程须选择旧流程或新流程")
 		}
@@ -140,8 +154,8 @@ func validateConfig(key string, v M) error {
 		if str(v, "engine") != "not_connected" && str(v, "engine") != "checkout" {
 			return bad("当前只支持结账准备，银行卡付款尚未接入")
 		}
-		if str(v, "link_mode") != "long" && str(v, "link_mode") != "short" {
-			return bad("链接模式无效")
+		if str(v, "link_mode") != "long" {
+			return bad("旧队列字段 link_mode 保持 long；实际长短链请在订阅流程配置中选择")
 		}
 		if !strings.Contains("|PH|US|JP|SG|GB|EG|TR|", "|"+str(v, "default_country")+"|") {
 			return bad("默认地区无效")
@@ -282,6 +296,23 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 			// An older admin page must not reset a selection it did not submit.
 			if _, present := v["subscription_flow"]; !present {
 				v["subscription_flow"] = configuredSubscriptionFlow(previous)
+			}
+			if _, present := v["checkout_type"]; !present {
+				v["checkout_type"] = configuredCheckoutType(previous)
+			}
+			if _, present := v["checkout_types"]; !present {
+				v["checkout_types"] = configuredCheckoutTypes(previous)
+			}
+			for _, product := range checkoutProducts {
+				before, after := configuredProductCheckoutType(previous, product.ID), configuredProductCheckoutType(v, product.ID)
+				if before != after {
+					labels := map[string]string{"hosted": "长链", "oaics": "短链"}
+					auditMessage += "；" + product.Name + " 结账链接由" + labels[before] + "切换为" + labels[after] + "，新旧流程的新订单生效"
+				}
+			}
+			if before, after := configuredCheckoutType(previous), configuredCheckoutType(v); before != after {
+				labels := map[string]string{"hosted": "长链", "oaics": "短链"}
+				auditMessage += "；历史兼容字段由" + labels[before] + "改为" + labels[after] + "，实际执行以套餐配置为准"
 			}
 			if before, after := configuredSubscriptionFlow(previous), configuredSubscriptionFlow(v); before != after {
 				labels := map[string]string{subscriptionFlowLegacy: "旧流程", subscriptionFlowCSLive: "新流程"}

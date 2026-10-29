@@ -35,7 +35,7 @@ func (a *App) savePaymentEvidence(ctx context.Context, tx pgx.Tx, id, attempt st
 		return err
 	}
 	u, err := url.Parse(raw)
-	if err != nil || !hostedPaymentURL(raw) || path.Base(u.Path) != e.CheckoutID || e.Currency != event.Currency {
+	if err != nil || !browserPaymentURL(raw) || path.Base(u.Path) != e.CheckoutID || e.Currency != event.Currency {
 		return checkoutFailure("invalid_response", false, false)
 	}
 	if e.IntentID != "" && !paymentIntentID.MatchString(e.IntentID) {

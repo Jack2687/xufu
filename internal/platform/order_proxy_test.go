@@ -84,86 +84,25 @@ func TestOrderProxyRetryKeepsSessionAndStopsIPDrift(t *testing.T) {
 	}
 }
 
-func TestNetworkRebuildReusesFrozenFeeAndStopsAfterLimit(t *testing.T) {
+func TestNetworkDriftStopsWithoutRebuilding(t *testing.T) {
 	h, id, p := subscriptionFixture(t, true)
 	ctx := context.Background()
 	completeSubscriptionCheckout(t, h, id)
-	for round := 1; round <= 2; round++ {
-		deadline := time.Now().Add(3 * time.Second)
-		for {
-			var link string
-			h.a.DB.QueryRow(ctx, "SELECT hosted_url_enc FROM payment_runs WHERE order_id=$1", id).Scan(&link)
-			if link != "" {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("runtime not started")
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		p.events <- paymentEvent{Type: "result", State: "failed", Code: "proxy_session_changed", Sent: false}
-		for {
-			var n int
-			var state string
-			h.a.DB.QueryRow(ctx, "SELECT network_restarts,state FROM payment_runs WHERE order_id=$1", id).Scan(&n, &state)
-			if n == round && state == "preparing" {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("network restart missing")
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		paymentBalances(t, h, 90000, 10000)
-		var freezes int
-		h.a.DB.QueryRow(ctx, "SELECT count(*) FROM ledger WHERE order_id=$1 AND kind='freeze'", id).Scan(&freezes)
-		if freezes != 1 {
-			t.Fatal("fee frozen twice")
-		}
-		j, e := h.a.claim(ctx, "checkout")
-		if e != nil || j == nil {
-			t.Fatal("new checkout not queued", e)
-		}
-		if e = h.a.recordOrderProxyIP(ctx, j, "203.0.113.2"); e != nil {
-			t.Fatal(e)
-		}
-		if e = h.a.finishCheckout(ctx, j, checkoutOutput{URL: "https://pay.openai.com/c/pay/cs_test_SubscriptionPrivate" + strconv.Itoa(round+1)}, nil); e != nil {
-			t.Fatal(e)
-		}
-	}
-	// Only two rebuilds are allowed; the third explicit no-submit failure releases once.
 	time.Sleep(1200 * time.Millisecond)
+	var endpoint string
+	h.a.DB.QueryRow(ctx, "SELECT endpoint_enc FROM order_proxy_sessions WHERE order_id=$1", id).Scan(&endpoint)
 	p.events <- paymentEvent{Type: "result", State: "failed", Code: "proxy_session_changed"}
 	waitPayment(t, h, id, "failed")
 	paymentBalances(t, h, 100000, 0)
-	var restarts int
+	var restarts, links int
+	var after string
 	h.a.DB.QueryRow(ctx, "SELECT network_restarts FROM payment_runs WHERE order_id=$1", id).Scan(&restarts)
-	if restarts != 2 {
-		t.Fatal("restart limit ignored")
+	h.a.DB.QueryRow(ctx, "SELECT count(*) FROM order_checkout_links WHERE order_id=$1", id).Scan(&links)
+	h.a.DB.QueryRow(ctx, "SELECT endpoint_enc FROM order_proxy_sessions WHERE order_id=$1", id).Scan(&after)
+	if restarts != 0 || links != 1 || endpoint == "" || endpoint != after {
+		t.Fatal("order proxy or checkout replaced")
 	}
 	assertSubscriptionPrivate(t, h, id)
-	admin := expect(t, h.request("GET", "/api/admin/orders/"+id, nil, h.admin, nil), 200)
-	links := admin["checkout_links"].([]any)
-	if len(links) != 3 {
-		t.Fatal("network rebuild discarded checkout history")
-	}
-	for i, item := range links {
-		link := item.(map[string]any)
-		want := "https://pay.openai.com/c/pay/cs_test_SubscriptionPrivate"
-		if i > 0 {
-			want += strconv.Itoa(i + 1)
-		}
-		if link["round"] != float64(i+1) || link["url"] != want {
-			t.Fatal("history assigned to wrong round")
-		}
-	}
-	if len(admin["trace"].([]any)) < 3 {
-		t.Fatal("missing persistent administrator trace")
-	}
-	customer := expect(t, h.request("GET", "/api/orders/"+id, nil, h.member, nil), 200)
-	if _, ok := customer["trace"]; ok {
-		t.Fatal("admin trace exposed to customer")
-	}
 }
 
 func TestNeverRebuildPaidOrUncertainPayment(t *testing.T) {
@@ -220,35 +159,34 @@ func TestSubmissionObservedNeverRestartsEvenOnContradictoryFailure(t *testing.T)
 	}
 }
 
-func TestCheckoutNetworkRebuildRequiresNoSideEffect(t *testing.T) {
-	h, id, _ := subscriptionFixture(t, true)
-	ctx := context.Background()
-	h.addProxy("PH", 1)
-	j, e := h.a.claim(ctx, "checkout")
-	if e != nil || j == nil {
-		t.Fatal(e)
-	}
-	if e = h.a.finishCheckout(ctx, j, checkoutOutput{}, checkoutFailure("proxy_session_changed", false, false)); e != nil {
-		t.Fatal(e)
-	}
-	var n int
-	h.a.DB.QueryRow(ctx, "SELECT network_restarts FROM payment_runs WHERE order_id=$1", id).Scan(&n)
-	if n != 1 {
-		t.Fatal("safe checkout not rebuilt")
-	}
-	j, e = h.a.claim(ctx, "checkout")
-	if e != nil || j == nil {
-		t.Fatal(e)
-	}
-	if e = h.a.BeforeSideEffect(ctx, j); e != nil {
-		t.Fatal(e)
-	}
-	if e = h.a.finishCheckout(ctx, j, checkoutOutput{}, checkoutFailure("proxy_session_changed", false, true)); e != nil {
-		t.Fatal(e)
-	}
-	h.a.DB.QueryRow(ctx, "SELECT network_restarts FROM payment_runs WHERE order_id=$1", id).Scan(&n)
-	if n != 1 {
-		t.Fatal("uncertain checkout rebuilt")
+func TestCheckoutNetworkDriftNeverRebuilds(t *testing.T) {
+	for _, submitted := range []bool{false, true} {
+		t.Run(strconv.FormatBool(submitted), func(t *testing.T) {
+			h, id, _ := subscriptionFixture(t, true)
+			ctx := context.Background()
+			h.addProxy("PH", 1)
+			j, e := h.a.claim(ctx, "checkout")
+			if e != nil || j == nil {
+				t.Fatal(e)
+			}
+			if submitted {
+				if e = h.a.BeforeSideEffect(ctx, j); e != nil {
+					t.Fatal(e)
+				}
+			}
+			if e = h.a.finishCheckout(ctx, j, checkoutOutput{}, checkoutFailure("proxy_session_changed", false, submitted)); e != nil {
+				t.Fatal(e)
+			}
+			var n int
+			h.a.DB.QueryRow(ctx, "SELECT network_restarts FROM payment_runs WHERE order_id=$1", id).Scan(&n)
+			if n != 0 {
+				t.Fatal("checkout rotated proxy")
+			}
+			j, e = h.a.claim(ctx, "checkout")
+			if e != nil || j != nil {
+				t.Fatal("checkout was requeued", e)
+			}
+		})
 	}
 }
 

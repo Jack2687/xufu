@@ -90,7 +90,7 @@ func (a *App) launchSubscription(id, attempt string, card cardInput, billing M) 
 				}
 				if job == "completed" {
 					raw, err := a.decrypt(enc)
-					if err != nil || !hostedPaymentURL(raw) {
+					if err != nil || !browserPaymentURL(raw) {
 						failed("unsupported_checkout")
 						return
 					}

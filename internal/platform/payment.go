@@ -370,6 +370,14 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 			a.paymentMu.Unlock()
 		}()
 		start := a.paymentStart
+		if validCustomCheckoutURL(in.URL) {
+			cookies, err := a.loadBrowserSession(ctx, id)
+			if err != nil {
+				a.finishPayment(ctx, id, attempt, paymentEvent{State: "failed", Code: "invalid_session"})
+				return
+			}
+			in.SessionCookies = cookies
+		}
 		if start == nil {
 			start = startPaymentNode
 		}
@@ -397,6 +405,7 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 		proc, e := start(ctx, in)
 		in.Card = cardInput{}
 		in.Billing = nil
+		in.SessionCookies = ""
 		fallback := func() {
 			c, stop := context.WithTimeout(context.Background(), 10*time.Second)
 			defer stop()

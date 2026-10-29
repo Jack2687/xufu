@@ -33,6 +33,14 @@ func TestSubscriptionWorkerAutomaticallyContinuesOriginalPayment(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			h, fixture, cp := protocolFixture(t, mode == "keep", true)
 			id, ctx := fixture.id, context.Background()
+			checkoutType := "hosted"
+			if mode == "keep" {
+				checkoutType = "oaics"
+				if _, err := h.a.DB.Exec(ctx, "UPDATE checkout_runs SET checkout_type=$2 WHERE order_id=$1", id, checkoutType); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setCheckoutType(t, h, map[string]string{"auto": "oaics", "hosted": "oaics", "oaics": "hosted"}[checkoutType])
 			var originalProxy, originalBilling string
 			if err := h.a.DB.QueryRow(ctx, "SELECT endpoint_enc,details_enc FROM order_proxy_sessions JOIN order_billing USING(order_id) WHERE order_id=$1", id).Scan(&originalProxy, &originalBilling); err != nil {
 				t.Fatal(err)
@@ -99,7 +107,7 @@ func TestSubscriptionWorkerAutomaticallyContinuesOriginalPayment(t *testing.T) {
 				client := fixtureProtocolClient{proxy: cp.Proxy}
 				client.pay = func(_ context.Context, s cslive.Session, card cslive.Card, o cslive.PayOptions) (cslive.Result, error) {
 					pays++
-					if card.Number != "4242424242424242" || o.CheckoutType != "hosted" || o.Plan != "pro20x" || s.SessionToken == "" || *o.CancelRenewal != (mode != "keep") {
+					if card.Number != "4242424242424242" || o.CheckoutType != protocolCheckoutType(checkoutType) || o.Plan != "pro20x" || s.SessionToken == "" || *o.CancelRenewal != (mode != "keep") {
 						t.Fatal("changed Pay input")
 					}
 					var billing M

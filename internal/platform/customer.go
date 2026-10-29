@@ -68,7 +68,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 	// Parse identity before idempotency lookup without tying a replay to today's
 	// admin setting. New orders are validated against the locked choice below.
 	sessionInfo, sessionErr := inspectSession(v.Session)
-	if sessionErr != nil && full {
+	if sessionErr != nil && v.Prepare {
 		sessionInfo, sessionErr = inspectSessionMode(v.Session, true)
 	}
 	if sessionErr != nil {
@@ -135,21 +135,37 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		var n int
 		flow := ""
-		if full {
+		checkoutType := "hosted"
+		if v.Prepare {
 			var paymentConfig M
 			if e := tx.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='payment' FOR SHARE").Scan(&paymentConfig); e != nil {
 				return nil, e
 			}
 			flow = configuredSubscriptionFlow(paymentConfig)
+			checkoutType = configuredProductCheckoutType(paymentConfig, v.Product)
+			if !validCheckoutType(checkoutType) {
+				return nil, businessError{409, "该套餐的结账链接配置无效，请联系运营"}
+			}
 			if !validSubscriptionFlow(flow) {
 				return nil, businessError{409, "订阅办理流程配置无效，请联系运营"}
 			}
-			if paymentConfig["enabled"] != true || (flow == subscriptionFlowLegacy && !a.paymentEnabled(r.Context())) {
+			if full && (paymentConfig["enabled"] != true || (flow == subscriptionFlowLegacy && !a.paymentEnabled(r.Context()))) {
 				return nil, businessError{409, "订阅付款暂不可用"}
 			}
 			if _, e := inspectSessionMode(v.Session, flow == subscriptionFlowCSLive); e != nil {
 				return nil, e
 			}
+			if full && flow == subscriptionFlowLegacy && checkoutType == "oaics" {
+				credentials, _, err := sessionCredentials(v.Session, sessionInfo)
+				if err != nil {
+					return nil, err
+				}
+				if browserSessionCookies(credentials) == "" {
+					return nil, bad("旧流程短链网页付款需要 Session 中的 sessionToken 或会话 Cookie；仅有 accessToken 时请使用长链")
+				}
+			}
+		}
+		if full {
 			if e := tx.QueryRow(r.Context(), "SELECT count(*) FROM renewal_tasks WHERE (email=$1 OR account_hash=$2) AND status IN ('queued','processing','checking','review')", sessionInfo.Email, hash(sessionInfo.AccountID)).Scan(&n); e != nil {
 				return nil, e
 			}
@@ -202,7 +218,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		_, e = tx.Exec(r.Context(), "INSERT INTO order_events(order_id,stage,message) VALUES($1,'draft','订阅方案已保存；未提交付款，未收取服务费。')", id)
 		if e == nil && v.Prepare {
-			if e = a.enqueueCheckout(r.Context(), tx, id, v.Session, v.Workspace, v.PremiumSeats, full && flow == subscriptionFlowCSLive); e != nil {
+			if e = a.enqueueCheckout(r.Context(), tx, id, v.Session, v.Workspace, v.PremiumSeats, flow, checkoutType); e != nil {
 				return nil, e
 			}
 			if full {

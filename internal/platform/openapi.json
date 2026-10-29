@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "序付 XUPAY 开发者 API",
-    "version": "1.6.2",
+    "version": "1.6.3",
     "description": "支持单独提链与订阅连续办理。订阅办理一次提交，自动付款并按选择保留或关闭续费；付款、订阅生效、续费分别返回业务状态。订阅订单不返回结账链接或内部诊断。服务费使用整数分 R。"
   },
   "servers": [
@@ -785,7 +785,7 @@
     "/api/v1/session/inspect": {
       "post": {
         "summary": "识别 Session 账号",
-        "description": "只检查 JSON、账号一致性与期限，不验证签名或在线登录状态。订阅办理按服务端配置校验：需要刷新凭据的流程要求 sessionToken 或受支持的会话 Cookie，可在刷新凭据有效时受理过期 AT；兼容流程及独立提链要求有效 AT。建议始终提交获授权账号刚获取的完整 Session。原始 Session 不持久保存。",
+        "description": "只检查 JSON、账号一致性与期限，不验证签名或在线登录状态。明确指定 workflow=subscription 或 checkout 时，按服务端流程配置校验：新流程要求 sessionToken 或受支持的会话 Cookie，可在刷新凭据有效时受理过期 AT；旧流程要求有效 AT。省略 workflow 仅做兼容性的有效 AT 检查，不能替代提链受理校验。建议始终提交获授权账号刚获取的完整 Session。原始 Session 不持久保存。",
         "operationId": "post_session_inspect",
         "security": [
           {
@@ -921,7 +921,7 @@
                       "subscription"
                     ],
                     "default": "checkout",
-                    "description": "订阅办理请选择 subscription；省略按独立提链检查。"
+                    "description": "订阅办理请选择 subscription，独立提链请选择 checkout；省略仅做基础有效 AT 检查。"
                   }
                 },
                 "required": [
@@ -1106,7 +1106,7 @@
     "/api/v1/orders": {
       "post": {
         "summary": "创建方案或准备结账",
-        "description": "workflow=subscription 时一次提交完整 Session、真实银行卡和 keep_renewal，系统自动办理付款、订阅生效核实和续费设置。办理流程由运营后台选择，不提供客户端选项；已受理订单不随配置切换，重试创建须沿用原 Idempotency-Key。建议始终提交 sessionToken 或受支持的会话 Cookie，缺少当前流程要求的凭据会在受理前返回 400。账单由后台随机选择并按单复用，无需客户提交；不返回结账链接。服务费受理时冻结，付款确认后结算。生效或续费异常保留付款成功，禁止重建订单重复付款。卡资料不持久化。省略 workflow 或设置 workflow=checkout 时仅提链/草稿，生成链接后即结束，不进入付款。订阅按订单绑定代理，已提交或结果未知不切换出口重复付款。",
+        "description": "workflow=subscription 时一次提交完整 Session、真实银行卡和 keep_renewal，系统自动办理付款、订阅生效核实和续费设置。办理流程由运营后台选择，不提供客户端选项；已受理订单不随配置切换，重试创建须沿用原 Idempotency-Key。建议始终提交 sessionToken 或受支持的会话 Cookie，缺少当前流程要求的凭据会在受理前返回 400。账单由后台随机选择并按单复用，无需客户提交；不返回结账链接。服务费受理时冻结，付款确认后结算。生效或续费异常保留付款成功，禁止重建订单重复付款。卡资料不持久化。省略 workflow 或设置 workflow=checkout 时仅提链/草稿，prepare=true 按同一后台流程生成结账链接；新流程要求刷新凭据，旧流程支持有效 AT-only。流程在受理时固定，生成链接后即结束，不进入付款；客户端不提供链接类型选项；新旧流程均按后台逐套餐配置选择长链或短链，受理时固定本单类型，新协议付款继续按上游实际模式处理。旧短链订阅网页付款需要 sessionToken 或会话 Cookie，AT-only 可独立提短链或办理长链。订阅整单固定原代理与出口，过期或漂移停止，不自动换会话。",
         "operationId": "post_orders",
         "security": [
           {
@@ -2232,7 +2232,7 @@
           "expires": {
             "type": "string",
             "format": "date-time",
-            "description": "会话到期时间。独立提链与 AT exp 取较早值；新订阅存在刷新凭据时用于其受理期限，不代表在线授权已验证。"
+            "description": "会话到期时间。旧流程与 AT exp 取较早值；新流程的订阅或提链存在刷新凭据时用于其受理期限，不代表在线授权已验证。"
           },
           "sessionToken": {
             "type": "string",
@@ -2649,7 +2649,7 @@
           },
           "url": {
             "type": "string",
-            "description": "仅独立提链订单向所属客户返回最终结账链接。连续订阅订单不返回。"
+            "description": "仅独立提链订单向所属客户返回最终结账链接；新旧流程均按后台逐套餐配置选择长链或短链。历史已保存链接保留展示。连续订阅订单不返回。"
           },
           "expires_at": {
             "type": "string",

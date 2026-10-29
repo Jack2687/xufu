@@ -169,7 +169,7 @@ func TestCheckoutPreflightDoesNotReplaceNativeCheckout(t *testing.T) {
 					if r.Header.Get("User-Agent") != iosCheckoutUA || r.Header.Get("OpenAI-Client-Type") != "native" {
 						t.Fatal("checkout method replaced")
 					}
-					return providerResponse(200, M{"checkout_session_id": "cs_live_QA123", "url": "https://pay.openai.com/c/pay/cs_live_QA123"}), nil
+					return providerResponse(200, M{"checkout_session_id": "cs_live_QA123", "url": "https://pay.openai.com/c/pay/cs_live_QA123", "tag": "hosted_checkout_session", "checkout_ui_mode": "hosted"}), nil
 				default:
 					t.Fatal("unexpected request")
 					return nil, nil

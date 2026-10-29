@@ -10,8 +10,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw json.RawMessage, workspace string, premium int, refreshable bool) error {
-	info, e := inspectSessionMode(raw, refreshable)
+func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw json.RawMessage, workspace string, premium int, flow, checkoutType string) error {
+	if !validSubscriptionFlow(flow) {
+		return bad("提链流程配置无效")
+	}
+	if !validCheckoutType(checkoutType) && !(flow == subscriptionFlowCSLive && checkoutType == "auto") {
+		return bad("提链类型配置无效")
+	}
+	info, e := inspectSessionMode(raw, flow == subscriptionFlowCSLive)
 	if e != nil {
 		return e
 	}
@@ -52,7 +58,7 @@ func (a *App) enqueueCheckout(ctx context.Context, tx pgx.Tx, id string, raw jso
 	if e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, "INSERT INTO checkout_runs(order_id,credentials_enc,credentials_expires_at,workspace_name,premium_seats) VALUES($1,$2,$3,$4,$5)", id, encrypted, deadline, workspace, premium); e != nil {
+	if _, e = tx.Exec(ctx, "INSERT INTO checkout_runs(order_id,credentials_enc,credentials_expires_at,workspace_name,premium_seats,flow,checkout_type) VALUES($1,$2,$3,$4,$5,$6,$7)", id, encrypted, deadline, workspace, premium, flow, checkoutType); e != nil {
 		return e
 	}
 	var userID string
@@ -138,8 +144,10 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 		return e
 	}
 	state, status, code, msg := "completed", "awaiting_payment", "link_ready", "结账链接已生成；尚未提交付款，未收取服务费。"
-	var workflow, paymentState string
-	tx.QueryRow(ctx, "SELECT o.workflow,COALESCE(p.state,'') FROM orders o LEFT JOIN payment_runs p ON p.order_id=o.id WHERE o.id=$1", j.OrderID).Scan(&workflow, &paymentState)
+	var workflow, paymentState, flow, checkoutType string
+	if e = tx.QueryRow(ctx, "SELECT o.workflow,COALESCE(p.state,''),c.flow,c.checkout_type FROM orders o JOIN checkout_runs c ON c.order_id=o.id LEFT JOIN payment_runs p ON p.order_id=o.id WHERE o.id=$1", j.OrderID).Scan(&workflow, &paymentState, &flow, &checkoutType); e != nil {
+		return e
+	}
 	var cfg M
 	if e = tx.QueryRow(ctx, "SELECT value FROM settings WHERE key='scheduler'").Scan(&cfg); e != nil {
 		return e
@@ -181,7 +189,7 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 		}
 	}
 	if cause == nil {
-		if !validCheckoutURL(result.URL) {
+		if !validHostedCheckoutURL(result.URL) && !((checkoutType == "oaics" || flow == subscriptionFlowCSLive && checkoutType == "auto") && validCustomCheckoutURL(result.URL)) {
 			return errors.New("invalid checkout result")
 		}
 		encrypted, err := a.encrypt(result.URL)
@@ -246,10 +254,10 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 	}
 	started := time.Now()
 	a.paymentTrace(ctx, j.OrderID, "checkout", "running", "", 0)
-	var enc, proxyEnc string
+	var enc, proxyEnc, flow, workflow string
 	var expiry, proxyExpiry time.Time
 	in := checkoutInput{}
-	e := a.DB.QueryRow(ctx, `SELECT c.credentials_enc,c.credentials_expires_at,c.workspace_name,c.premium_seats,o.product_id,o.country,o.seats,s.endpoint_enc,s.expires_at FROM checkout_runs c JOIN orders o ON o.id=c.order_id JOIN order_proxy_sessions s ON s.order_id=o.id WHERE c.order_id=$1`, j.OrderID).Scan(&enc, &expiry, &in.Workspace, &in.PremiumSeats, &in.Product, &in.Country, &in.Seats, &proxyEnc, &proxyExpiry)
+	e := a.DB.QueryRow(ctx, `SELECT c.credentials_enc,c.credentials_expires_at,c.workspace_name,c.premium_seats,o.product_id,o.country,o.seats,s.endpoint_enc,s.expires_at,c.flow,o.workflow,c.checkout_type FROM checkout_runs c JOIN orders o ON o.id=c.order_id JOIN order_proxy_sessions s ON s.order_id=o.id WHERE c.order_id=$1`, j.OrderID).Scan(&enc, &expiry, &in.Workspace, &in.PremiumSeats, &in.Product, &in.Country, &in.Seats, &proxyEnc, &proxyExpiry, &flow, &workflow, &in.CheckoutType)
 	failJob := func(err error) {
 		var failure checkoutError
 		errors.As(err, &failure)
@@ -292,25 +300,20 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 		return err
 	}
 	cfg := a.config(ctx, "scheduler")
-	in.Mode = str(cfg, "link_mode")
-	if in.Mode == "" {
-		in.Mode = "long"
-	}
-	if a.isSubscription(ctx, j.OrderID) {
-		in.Mode = "long"
+	in.Mode = "long"
+	if in.CheckoutType == "oaics" {
+		in.Mode = "short"
 	}
 	endpoint, e := a.decrypt(proxyEnc)
 	if e != nil {
 		failJob(checkoutFailure("proxy_unavailable", false, false))
 		return
 	}
-	client, closeClient, e := newPaymentClient(endpoint, time.Duration(num(a.config(ctx, "proxy"), "request_timeout_seconds", 60))*time.Second)
-	if e != nil {
-		failJob(checkoutFailure("proxy_unavailable", false, false))
-		return
+	ttl := num(cfg, "task_timeout_seconds", 180)
+	if flow == subscriptionFlowCSLive && workflow == "link" {
+		ttl = max(ttl, 255)
 	}
-	defer closeClient()
-	task, cancel := context.WithTimeout(ctx, time.Duration(num(cfg, "task_timeout_seconds", 180))*time.Second)
+	task, cancel := context.WithTimeout(ctx, time.Duration(ttl)*time.Second)
 	defer cancel()
 	heartbeatDone := make(chan struct{})
 	go func() {
@@ -329,23 +332,7 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 			}
 		}
 	}()
-	in.BeforeCreate = func(candidate *checkoutInput) error {
-		s := &providerSession{ctx: a.providerContext(task, j.OrderID, "session_refresh"), client: client, in: candidate, purpose: "checkout",
-			persist: func(v checkoutInput) error { return a.saveCheckoutCredentials(task, j, v) },
-			trace:   func(state, code string) { a.paymentTrace(task, j.OrderID, "session_refresh", state, code, 0) }}
-		if e := s.prepare(); e != nil {
-			return e
-		}
-		a.paymentTrace(task, j.OrderID, "account_check", "running", "", 0)
-		e := checkAccountForCheckout(a.providerContext(task, j.OrderID, "account_check"), s)
-		state := "completed"
-		if e != nil {
-			state = "failed"
-		}
-		a.paymentTrace(task, j.OrderID, "account_check", state, providerCode(e), 0)
-		return e
-	}
-	result, cause := generateCheckout(a.providerContext(task, j.OrderID, "checkout"), client, in, func() error { return a.BeforeSideEffect(task, j) })
+	result, cause := a.runCheckoutFlow(task, j, endpoint, in, flow, workflow)
 	cancel()
 	<-heartbeatDone
 	// Finalization gets its own short context even when the request timed out.
@@ -364,6 +351,22 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 		}
 	}
 	a.paymentTrace(final, j.OrderID, "checkout", traceState, code, time.Since(started))
+}
+
+func (a *App) runCheckoutFlow(ctx context.Context, j *Job, endpoint string, in checkoutInput, flow, workflow string) (checkoutOutput, error) {
+	if workflow == "link" && flow == subscriptionFlowCSLive {
+		return a.generateProtocolCheckout(ctx, j, endpoint, in)
+	}
+	if flow != subscriptionFlowLegacy {
+		return checkoutOutput{}, checkoutFailure("preparation_failed", false, false)
+	}
+	client, closeClient, err := newLegacyCheckoutClient(ctx, endpoint)
+	if err != nil {
+		return checkoutOutput{}, err
+	}
+	defer closeClient()
+	// generator.py uses the supplied access token directly for both modes.
+	return generateCheckout(a.providerContext(ctx, j.OrderID, "checkout"), client, in, func() error { return a.BeforeSideEffect(ctx, j) })
 }
 
 func (a *App) RunCheckout(ctx context.Context) {

@@ -18,3 +18,50 @@ func configuredSubscriptionFlow(cfg M) string {
 func validSubscriptionFlow(flow string) bool {
 	return flow == subscriptionFlowLegacy || flow == subscriptionFlowCSLive
 }
+
+func configuredCheckoutType(cfg M) string {
+	if _, present := cfg["checkout_type"]; !present {
+		return "hosted"
+	}
+	return str(cfg, "checkout_type")
+}
+
+func validCheckoutType(kind string) bool { return kind == "hosted" || kind == "oaics" }
+
+var checkoutProducts = []struct{ ID, Name, Default string }{
+	{"pro5x", "Pro 5x", "hosted"},
+	{"pro", "Pro 20x", "hosted"},
+	{"team", "Team 标准", "oaics"},
+	{"team_premium", "Team 高级", "oaics"},
+	{"plus", "Plus", "oaics"},
+	{"go", "Go", "oaics"},
+}
+
+func defaultCheckoutTypes() M {
+	result := M{}
+	for _, product := range checkoutProducts {
+		result[product.ID] = product.Default
+	}
+	return result
+}
+
+func configuredCheckoutTypes(cfg M) M {
+	if value, present := cfg["checkout_types"]; present {
+		result, _ := value.(M)
+		return result
+	}
+	return defaultCheckoutTypes()
+}
+
+func configuredProductCheckoutType(cfg M, product string) string {
+	return str(configuredCheckoutTypes(cfg), product)
+}
+
+// Auto uses the SDK's default entry point, then its actual upstream mode.
+// Keep explicit types on historical orders so recovery never changes their flow.
+func protocolCheckoutType(kind string) string {
+	if kind == "auto" {
+		return ""
+	}
+	return kind
+}

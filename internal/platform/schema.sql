@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS checkout_runs (
  created_at timestamptz NOT NULL DEFAULT now()
 );
 -- Card numbers, CVV, raw browser state and upstream bodies are never stored.
+ALTER TABLE checkout_runs ADD COLUMN IF NOT EXISTS flow text NOT NULL DEFAULT 'legacy' CHECK(flow IN ('legacy','cslive'));
+ALTER TABLE checkout_runs ADD COLUMN IF NOT EXISTS checkout_type text NOT NULL DEFAULT 'hosted' CHECK(checkout_type IN ('hosted','oaics'));
+ALTER TABLE checkout_runs DROP CONSTRAINT IF EXISTS checkout_runs_checkout_type_check;
+ALTER TABLE checkout_runs ADD CONSTRAINT checkout_runs_checkout_type_check CHECK(checkout_type IN ('hosted','oaics') OR (flow='cslive' AND checkout_type='auto'));
 CREATE TABLE IF NOT EXISTS payment_runs (
  order_id text PRIMARY KEY REFERENCES orders(id), attempt_id text UNIQUE NOT NULL,
  state text NOT NULL CHECK(state IN ('preparing','quoted','submitting','checking','action_required','review','succeeded','failed','cancelled')),

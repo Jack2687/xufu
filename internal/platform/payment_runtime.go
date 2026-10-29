@@ -20,6 +20,7 @@ type cardInput struct {
 	CVC    string `json:"cvc"`
 }
 type paymentInput struct {
+	SessionCookies string             `json:"session_cookies,omitempty"`
 	Proxy          *browserProxyInput `json:"proxy"`
 	ExpectedIP     string             `json:"expected_ip"`
 	ProxyExpiresAt int64              `json:"proxy_expires_at"`

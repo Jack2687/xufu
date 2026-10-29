@@ -1,4 +1,16 @@
-# 2026-10-29 最新订阅对齐规则（覆盖下方冲突的历史说明）
+# 2026-10-29 两份附件流程对齐（当前要求，覆盖下方历史规则）
+
+用户最新要求（覆盖此前新流程自动/旧流程全局选择）：两个前台入口、新旧流程共用 payment.checkout_types 的逐套餐长短链配置。默认 pro5x/pro 为 hosted 长链，team/team_premium/plus/go 为 oaics 短链；管理员在订阅流程配置中逐项修改。当前商品只有 Pro 5x/20x、Team 标准/高级；Plus/Go 仅为后台预设，不自动上架或宣称旧脚本已支持其办理。新申请受理事务按 product_id 取值并保存 checkout_runs.checkout_type，后续执行/恢复/幂等回放不跟随配置变化；历史 auto 记录继续原默认逻辑。旧单字段 payment.checkout_type 仅为旧管理端兼容，不再参与新订单选型。新流程按所选类型发起请求，付款仍遵循原包实际上游模式；独立提链保持同单链接验证。
+
+- 旧提链按 generator.py：系统 curl；long 为 iOS/Hosted，无 entry_point，真实直返长链或 Stripe init；short 为 Web/Custom，Pro/Team 对应 entry_point，返回官方短路由，GB 缺省 openai_ie、其余已支持地区 openai_llc。直接使用有效 AT，不额外刷新/在线账号预查，不按上游自动切换长短链。保留无真实长链不报成功、同单验证与敏感信息隔离；不复制脚本写死代理、直连对照、自动改地区或缺链拼造。
+- 旧订阅付款仍为私有 Chromium 官方网页，支持 Hosted 和官方短链。短链需真实 sessionToken/会话 Cookie，AT-only 可独立提短链或办理长链；缺 Cookie 在受理/冻结前说明。Cookie 只经匿名管道进入临时上下文，只作用于 chatgpt.com，不保存浏览器状态。报价、确认、原 PI/批准必须绑定原 Checkout；未知只查，禁止重复付款。
+- 新流程恢复 cs-live-source.zip 的 Hosted/Custom、实际返回模式分流、限定 Plus→Pro5x 升级、原交易批准和 SDK 接续；独立提链仅 CreateCheckout，无付款/升级/取消权限。
+- 两套订阅均用现有正式账单池随机快照，整单固定原出口 IP，过期/漂移停止，不再自动换会话重建。历史 network_restart_limit 与 scheduler.link_mode 仅兼容旧配置；两套新订单均以 payment.checkout_types 的本套餐规则为准。
+- 本轮开发使用隔离本地18869/18868；不启动已迁移的18860/18862、不重放真实 Session/订单。验证与本地更新结果见 docs/verification.md。用户随后已授权提交推送及从 GitHub 更新正式环境；具体发布状态以工作区 xupay-production-runbook.md 最新记录为准。
+
+以下为历史记录；冲突以本节为准。
+
+# 2026-10-29 最新订阅对齐规则（历史，以上述新说明为准）
 
 后台 `payment.subscription_flow` 可选 `legacy`（改造前备份的完整提链/网页付款/生效与续费流程）或 `cslive`（当前新流程），缺省保持 `cslive`。仅新订单受理事务读取此设置并固定原执行器；已有订单、幂等回放、核实、重启不可跟随当前设置改流程，不因失败自动切换重付。旧管理客户端遗漏字段时保留已有选择。管理员订单详情显示本单流程，客户/API不投影。旧版基线为7e1dfd4，本次不改旧提链/付款核心；完整对比与待补充事项见 `docs/subscription-flow-comparison.md`。独立提链、续费菜单不受该开关影响。
 
