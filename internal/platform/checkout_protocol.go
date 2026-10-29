@@ -172,7 +172,7 @@ func (a *App) generateProtocolCheckout(ctx context.Context, j *Job, endpoint str
 		return checkoutOutput{}, checkoutFailure("existing_subscription", false, false)
 	}
 	u, _ := url.Parse(result.CheckoutURL)
-	valid := validHostedCheckoutURL(result.CheckoutURL)
+	valid := kind != "oaics" && validHostedCheckoutURL(result.CheckoutURL)
 	if (kind == "oaics" || kind == "auto") && u != nil && validCustomCheckoutURL(result.CheckoutURL) {
 		// Custom links are official checkout routes, never arbitrary redirect URLs.
 		valid = u.Path == "/checkout/"+result.ProcessorEntity+"/"+result.CheckoutID

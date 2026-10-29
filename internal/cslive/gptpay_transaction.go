@@ -174,10 +174,9 @@ func (t *gptpay_transaction) createCheckout(kind string, withPrice bool) (result
 			t.observer.Complete(t.cp.Phase, t.cp.Payment, result.ErrorCode)
 		}
 	}()
-	mode := gptpay_requestedCheckoutUIMode(kind)
 	// Hosted 提链及价格读取只需公钥和 init；完整设备上下文留给付款和可恢复快照。
 	stripeRequired := withPrice && kind != "hosted" || t.client.Checkpoint != nil
-	checkout, err := t.prepareCheckout(mode, stripeRequired)
+	checkout, err := t.prepareCheckout(kind, stripeRequired)
 	if err == nil && protocol_AsString(checkout["payment_flow"]) == "subscription_update" {
 		result.Flow = "subscription_update"
 		result.ProcessorEntity = t.cp.Entity
@@ -243,7 +242,7 @@ func (t *gptpay_transaction) execute(billing model_Billing, card *model_Card, ex
 }
 
 func (t *gptpay_transaction) executeFlow(billing model_Billing, card *model_Card, expected *int64, approval model_PaymentApproval, checkoutType string) error {
-	checkout, e := t.prepareCheckout(gptpay_requestedCheckoutUIMode(checkoutType), true)
+	checkout, e := t.prepareCheckout(checkoutType, true)
 	if e != nil {
 		return e
 	}
@@ -251,7 +250,10 @@ func (t *gptpay_transaction) executeFlow(billing model_Billing, card *model_Card
 		return t.runSubscriptionUpdate(card, billing, expected, approval)
 	}
 	var info protocol_Map
-	if strings.HasPrefix(t.cp.CheckoutID, "cs_live_") && t.cp.Metadata["checkout_ui_mode"] == "redirect" {
+	if t.cp.Metadata["checkout_ui_mode"] == "redirect" {
+		if !strings.HasPrefix(t.cp.CheckoutID, "cs_live_") {
+			return protocol_NewError("checkout_id_invalid")
+		}
 		info, e = t.stripe.HostedPrepare(stripe_FindHostedURL(checkout, t.cp.CheckoutID), billing)
 		if t.stripe.HostedURL != "" {
 			t.cp.Metadata["hosted_url"] = t.stripe.HostedURL

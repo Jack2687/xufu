@@ -313,3 +313,43 @@ func TestLinkWorkerKeepsSelectedFlowAndNeverPays(t *testing.T) {
 		}
 	}
 }
+
+// The adapter must return the selected URL shape and bind it to the same order.
+func TestProtocolLinkSelectedShortRoute(t *testing.T) {
+	t.Setenv("XUPAY_LOCAL_PROXY", "")
+	for _, mode := range []string{"short", "hosted", "other_order", "other_entity"} {
+		t.Run(mode, func(t *testing.T) {
+			in := checkoutInput{AccessToken: "PRIVATE_AT", SessionToken: "PRIVATE_SESSION", Country: "PH", Product: "pro5x", CheckoutType: "oaics"}
+			calls := 0
+			a := &App{checkoutClient: func(cslive.Config, cslive.Hooks) protocolCheckoutClient {
+				return checkoutClientFunc(func(_ context.Context, _ cslive.Session, o cslive.CreateCheckoutOptions) (cslive.CheckoutResult, error) {
+					calls++
+					if o.CheckoutType != "oaics" {
+						t.Fatal("selected short type changed")
+					}
+					r := cslive.CheckoutResult{CheckoutID: "cs_live_Test", ProcessorEntity: "openai_llc", CheckoutURL: "https://chatgpt.com/checkout/openai_llc/cs_live_Test"}
+					switch mode {
+					case "hosted":
+						r.CheckoutURL = "https://pay.openai.com/c/pay/cs_live_Test#returned"
+					case "other_order":
+						r.CheckoutURL = "https://chatgpt.com/checkout/openai_llc/cs_live_Other"
+					case "other_entity":
+						r.CheckoutURL = "https://chatgpt.com/checkout/openai_ie/cs_live_Test"
+					}
+					return r, nil
+				})
+			}}
+			result, err := a.generateProtocolCheckout(context.Background(), &Job{}, "http://user:pass@proxy.example.com:8080", in)
+			if calls != 1 {
+				t.Fatal("checkout repeated")
+			}
+			if mode == "short" {
+				if err != nil || !validCustomCheckoutURL(result.URL) {
+					t.Fatal("short route rejected", err)
+				}
+			} else if err == nil || result.URL != "" {
+				t.Fatal("wrong checkout URL returned", mode)
+			}
+		})
+	}
+}

@@ -196,7 +196,7 @@ func (s *stripe_Stripe) CustomPriceSnapshot(checkout protocol_Map) (protocol_Map
 	if !ok || !strings.HasPrefix(key, "pk_") {
 		return nil, &protocol_ProtocolError{Code: "publishable_key_missing"}
 	}
-	// 分流只看创建响应的 checkout_session_id / checkout_ui_mode。
+	// 执行分支由本单保存的长短链选择确定；这里只读取原结账的价格上下文。
 	// payment_pages/init 的 session_id 经常是 Elements 会话，不是 cs_live_；
 	// create 的 client_secret 也不是这条 Custom 路径的入参。
 	return s.Call("POST", "/payment_pages/"+s.CP.CheckoutID+"/init", stripe_StripeCallOptions{Form: protocol_O("key", key, "_stripe_version", s.CP.StripeVersion, "browser_locale", "en-US", "browser_timezone", s.CP.Timezone, "elements_session_client", protocol_O("stripe_js_id", s.ClientID, "elements_init_source", "custom_checkout", "referrer_host", "chatgpt.com", "locale", "en-US"), "elements_options_client", protocol_O("saved_payment_method", protocol_O("enable_save", "auto", "enable_redisplay", "auto")))})

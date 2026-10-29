@@ -8,7 +8,7 @@ import (
 )
 
 func TestReferenceHostedPayAndRecovery(t *testing.T) {
-	for _, mode := range []string{"direct", "unknown", "action_required", "declined", "authorized"} {
+	for _, mode := range []string{"direct", "custom_direct", "custom_init", "missing_mode", "invalid_mode", "missing", "short", "other_order", "oaics", "upgrade", "unknown", "action_required", "declined", "authorized"} {
 		t.Run(mode, func(t *testing.T) {
 			flow, tr, saved := flowFixture(t, true)
 			long := "https://pay.openai.com/c/pay/cs_live_Fixture#" + strings.Repeat("a", 260)
@@ -71,6 +71,12 @@ func TestReferenceHostedPayAndRecovery(t *testing.T) {
 					r := protocol_Map{"checkout_session_id": "cs_live_Fixture", "checkout_ui_mode": "hosted", "publishable_key": "pk_test_Fixture"}
 					if strings.HasPrefix(mode, "custom") || mode == "oaics" {
 						r["checkout_ui_mode"] = "custom"
+					}
+					if mode == "missing_mode" {
+						delete(r, "checkout_ui_mode")
+					}
+					if mode == "invalid_mode" {
+						r["checkout_ui_mode"] = "unrecognized"
 					}
 					if mode == "oaics" {
 						r["checkout_session_id"] = "oaics_Fixture"

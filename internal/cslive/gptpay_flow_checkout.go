@@ -7,7 +7,9 @@ import (
 	time "time"
 )
 
-func (t *gptpay_transaction) prepareCheckout(mode string, stripeRequired bool) (protocol_Map, error) {
+func (t *gptpay_transaction) prepareCheckout(kind string, stripeRequired bool) (protocol_Map, error) {
+	mode := gptpay_requestedCheckoutUIMode(kind)
+	selected := kind == "hosted" || kind == "oaics"
 	t.progress.emit(model_ProgressStageSession, model_ProgressRunning, "")
 	if e := t.save("initializing"); e != nil {
 		return nil, e
@@ -36,6 +38,11 @@ func (t *gptpay_transaction) prepareCheckout(mode string, stripeRequired bool) (
 	}
 	cp.Metadata["subscription_baseline"] = baseline
 	flow := gptpay_accountPaymentFlow(cp.Plan, baseline)
+	// An explicit link choice must not be bypassed by the direct-upgrade path.
+	// Existing subscriptions keep the ordinary account-conflict handling.
+	if selected && flow == "subscription_update" {
+		flow = "existing_subscription"
+	}
 	t.emitAccountStatus(baseline, until, renewal, flow)
 	if flow == "subscription_update" {
 		cp.Metadata["payment_flow"] = "subscription_update"
@@ -90,16 +97,23 @@ func (t *gptpay_transaction) prepareCheckout(mode string, stripeRequired bool) (
 	if !protocol_Matches(`[a-z0-9_]{2,64}`, cp.Entity) {
 		return nil, protocol_NewError("processor_entity_invalid")
 	}
-	actual, ok := checkout["checkout_ui_mode"].(string)
-	if !ok || actual != "custom" && actual != "redirect" && actual != "hosted" {
-		return nil, protocol_NewError("checkout_ui_mode_invalid")
+	actual := mode
+	if !selected {
+		// Only historical automatic orders follow the upstream mode.
+		var ok bool
+		actual, ok = checkout["checkout_ui_mode"].(string)
+		if !ok || actual != "custom" && actual != "redirect" && actual != "hosted" {
+			return nil, protocol_NewError("checkout_ui_mode_invalid")
+		}
 	}
 	if actual == "hosted" {
 		actual = "redirect"
 	}
+	// Persist the selected execution path so recovery uses the same transaction.
+	// An upstream mode field neither overrides nor rejects an explicit choice.
 	cp.Metadata["checkout_ui_mode"] = actual
 	// Keep only an actual upstream link for the server's encrypted admin history.
-	if raw := stripe_FindHostedURL(checkout, cp.CheckoutID); raw != "" {
+	if raw := stripe_FindHostedURL(checkout, cp.CheckoutID); raw != "" && (!selected || kind == "hosted") {
 		cp.Metadata["hosted_url"] = raw
 	}
 	if secret, ok := checkout["client_secret"].(string); ok && strings.HasPrefix(secret, cp.CheckoutID+"_secret_") && len(secret) > len(cp.CheckoutID+"_secret_") {

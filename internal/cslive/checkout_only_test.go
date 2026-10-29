@@ -85,11 +85,11 @@ func TestStandaloneCheckoutOnlyReturnsRealHostedLink(t *testing.T) {
 			if err != nil || creates != 1 || len(*saved) != 0 {
 				t.Fatal("unexpected creation or payment checkpoint", err, creates, result.ErrorCode, tr.calls)
 			}
-			if custom && mode != "custom_hosted" {
+			if custom {
 				if result.ErrorCode != "" || result.CheckoutURL != "https://chatgpt.com/checkout/openai_llc/"+checkoutID || inits != 0 {
 					t.Fatal("reference Custom short link not returned", result.ErrorCode)
 				}
-			} else if mode == "direct" || mode == "stripe_init" || mode == "custom_hosted" {
+			} else if mode == "direct" || mode == "stripe_init" {
 				if result.ErrorCode != "" || result.CheckoutURL != strings.Replace(long, "checkout.stripe.com", "pay.openai.com", 1) {
 					t.Fatal("valid hosted link not returned", result.ErrorCode)
 				}
