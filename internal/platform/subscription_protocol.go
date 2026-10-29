@@ -20,7 +20,9 @@ type protocolCardSlot struct {
 }
 
 func (a *App) subscriptionEnabled(ctx context.Context) bool {
-	return a.config(ctx, "payment")["enabled"] == true
+	cfg := a.config(ctx, "payment")
+	flow := configuredSubscriptionFlow(cfg)
+	return cfg["enabled"] == true && validSubscriptionFlow(flow) && (flow != subscriptionFlowLegacy || a.paymentEnabled(ctx))
 }
 
 func (a *App) isProtocolSubscription(ctx context.Context, id string) bool {

@@ -60,16 +60,17 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 		v.Prepare = true
 		v.PaymentCurrency = currencyForCountry(v.Country)
 		v.PaymentLimit = 10000000000
-		if a.config(r.Context(), "payment")["enabled"] != true {
-			fail(w, 409, "订阅付款暂不可用")
-			return
-		}
 		if !validCard(&v.Card) || v.PaymentCurrency == "" {
 			fail(w, 400, "请核对银行卡及订阅地区")
 			return
 		}
 	}
-	sessionInfo, sessionErr := inspectSessionMode(v.Session, full)
+	// Parse identity before idempotency lookup without tying a replay to today's
+	// admin setting. New orders are validated against the locked choice below.
+	sessionInfo, sessionErr := inspectSession(v.Session)
+	if sessionErr != nil && full {
+		sessionInfo, sessionErr = inspectSessionMode(v.Session, true)
+	}
 	if sessionErr != nil {
 		fail(w, 400, sessionErr.Error())
 		return
@@ -133,7 +134,22 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 			return nil, e
 		}
 		var n int
+		flow := ""
 		if full {
+			var paymentConfig M
+			if e := tx.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='payment' FOR SHARE").Scan(&paymentConfig); e != nil {
+				return nil, e
+			}
+			flow = configuredSubscriptionFlow(paymentConfig)
+			if !validSubscriptionFlow(flow) {
+				return nil, businessError{409, "订阅办理流程配置无效，请联系运营"}
+			}
+			if paymentConfig["enabled"] != true || (flow == subscriptionFlowLegacy && !a.paymentEnabled(r.Context())) {
+				return nil, businessError{409, "订阅付款暂不可用"}
+			}
+			if _, e := inspectSessionMode(v.Session, flow == subscriptionFlowCSLive); e != nil {
+				return nil, e
+			}
 			if e := tx.QueryRow(r.Context(), "SELECT count(*) FROM renewal_tasks WHERE (email=$1 OR account_hash=$2) AND status IN ('queued','processing','checking','review')", sessionInfo.Email, hash(sessionInfo.AccountID)).Scan(&n); e != nil {
 				return nil, e
 			}
@@ -186,11 +202,11 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		_, e = tx.Exec(r.Context(), "INSERT INTO order_events(order_id,stage,message) VALUES($1,'draft','订阅方案已保存；未提交付款，未收取服务费。')", id)
 		if e == nil && v.Prepare {
-			if e = a.enqueueCheckout(r.Context(), tx, id, v.Session, v.Workspace, v.PremiumSeats, full); e != nil {
+			if e = a.enqueueCheckout(r.Context(), tx, id, v.Session, v.Workspace, v.PremiumSeats, full && flow == subscriptionFlowCSLive); e != nil {
 				return nil, e
 			}
 			if full {
-				attempt, err := a.reserveSubscription(r.Context(), tx, id, u.ID, v.Card, v.KeepRenewal, v.PaymentLimit, v.PaymentCurrency, hash(sessionInfo.AccountID))
+				attempt, err := a.reserveSubscription(r.Context(), tx, id, u.ID, v.Card, v.KeepRenewal, v.PaymentLimit, v.PaymentCurrency, hash(sessionInfo.AccountID), flow)
 				if err != nil {
 					return nil, err
 				}

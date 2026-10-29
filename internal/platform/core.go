@@ -149,7 +149,7 @@ func (a *App) seed(ctx context.Context) error {
 		"scheduler": {"paused": false, "max_parallel": 2, "per_user_parallel": 1, "retry_limit": 2, "retry_delay_seconds": 30, "task_timeout_seconds": 180, "queue_limit": 500, "default_country": "PH", "link_mode": "long", "engine": "not_connected"},
 		"billing":   {"country": "US", "allow_customer_edit": true, "address_templates": []M{}},
 		"proxy":     {"default_id": "", "global_id": "", "match_country": true, "request_timeout_seconds": 60},
-		"payment":   {"enabled": true, "max_parallel": 2, "per_user_parallel": 1, "prepare_timeout_seconds": 120, "quote_timeout_seconds": 180, "result_timeout_seconds": 120, "requests_per_minute": 3, "subscription_wait_seconds": 600, "renewal_check_interval_seconds": 30, "renewal_check_limit": 10, "network_restart_limit": 2, "activation_check_interval_seconds": 5, "activation_check_limit": 12},
+		"payment":   {"enabled": true, "subscription_flow": subscriptionFlowCSLive, "max_parallel": 2, "per_user_parallel": 1, "prepare_timeout_seconds": 120, "quote_timeout_seconds": 180, "result_timeout_seconds": 120, "requests_per_minute": 3, "subscription_wait_seconds": 600, "renewal_check_interval_seconds": 30, "renewal_check_limit": 10, "network_restart_limit": 2, "activation_check_interval_seconds": 5, "activation_check_limit": 12},
 		"tiers":     {"items": defaultTiers().Items},
 	}
 	for k, v := range defaults {
@@ -158,7 +158,7 @@ func (a *App) seed(ctx context.Context) error {
 			return e
 		}
 	}
-	if _, e := a.DB.Exec(ctx, `UPDATE settings SET value='{"subscription_wait_seconds":600,"renewal_check_interval_seconds":30,"renewal_check_limit":10,"network_restart_limit":2,"activation_check_interval_seconds":5,"activation_check_limit":12}'::jsonb || value WHERE key='payment'`); e != nil {
+	if _, e := a.DB.Exec(ctx, `UPDATE settings SET value='{"subscription_flow":"cslive","subscription_wait_seconds":600,"renewal_check_interval_seconds":30,"renewal_check_limit":10,"network_restart_limit":2,"activation_check_interval_seconds":5,"activation_check_limit":12}'::jsonb || value WHERE key='payment'`); e != nil {
 		return e
 	}
 	// Region routing is mandatory; retain the legacy setting for API compatibility.

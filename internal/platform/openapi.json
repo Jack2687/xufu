@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "序付 XUPAY 开发者 API",
-    "version": "1.6.1",
+    "version": "1.6.2",
     "description": "支持单独提链与订阅连续办理。订阅办理一次提交，自动付款并按选择保留或关闭续费；付款、订阅生效、续费分别返回业务状态。订阅订单不返回结账链接或内部诊断。服务费使用整数分 R。"
   },
   "servers": [
@@ -785,7 +785,7 @@
     "/api/v1/session/inspect": {
       "post": {
         "summary": "识别 Session 账号",
-        "description": "只检查 JSON、账号一致性与期限，不验证签名或在线登录状态。workflow=subscription 要求 sessionToken 或受支持的会话 Cookie；AT 过期但刷新凭据期限有效时可受理，办理时再在线刷新核对。其他工作流需要有效 AT。原始 Session 不持久保存。",
+        "description": "只检查 JSON、账号一致性与期限，不验证签名或在线登录状态。订阅办理按服务端配置校验：需要刷新凭据的流程要求 sessionToken 或受支持的会话 Cookie，可在刷新凭据有效时受理过期 AT；兼容流程及独立提链要求有效 AT。建议始终提交获授权账号刚获取的完整 Session。原始 Session 不持久保存。",
         "operationId": "post_session_inspect",
         "security": [
           {
@@ -1106,7 +1106,7 @@
     "/api/v1/orders": {
       "post": {
         "summary": "创建方案或准备结账",
-        "description": "workflow=subscription 时一次提交带刷新凭据的完整 Session、真实银行卡和 keep_renewal，系统自动办理付款、订阅生效核实和续费设置。账单由后台选择，无需客户提交；不返回结账链接。服务费受理时冻结，付款确认后结算。生效或续费异常保留付款成功，禁止重建订单重复付款。卡资料不持久化；重试创建须沿用原 Idempotency-Key。省略 workflow 或设置 workflow=checkout 时仅提链/草稿，生成链接后即结束，不进入付款。新订阅使用服务端连续流程，每单固定同一代理出口及一份后台随机正式账单。",
+        "description": "workflow=subscription 时一次提交完整 Session、真实银行卡和 keep_renewal，系统自动办理付款、订阅生效核实和续费设置。办理流程由运营后台选择，不提供客户端选项；已受理订单不随配置切换，重试创建须沿用原 Idempotency-Key。建议始终提交 sessionToken 或受支持的会话 Cookie，缺少当前流程要求的凭据会在受理前返回 400。账单由后台随机选择并按单复用，无需客户提交；不返回结账链接。服务费受理时冻结，付款确认后结算。生效或续费异常保留付款成功，禁止重建订单重复付款。卡资料不持久化。省略 workflow 或设置 workflow=checkout 时仅提链/草稿，生成链接后即结束，不进入付款。订阅按订单绑定代理，已提交或结果未知不切换出口重复付款。",
         "operationId": "post_orders",
         "security": [
           {
@@ -2238,13 +2238,13 @@
             "type": "string",
             "writeOnly": true,
             "maxLength": 32768,
-            "description": "新订阅必须提供此字段或受支持的会话 Cookie；独立提链可省略。只加密短期保存，不回显，不可编造。"
+            "description": "建议始终提交的会话刷新凭据；需要刷新授权的办理流程必填（或提供受支持 cookies）。仅短期加密保留，不回显。"
           },
           "cookies": {
             "type": "string",
             "writeOnly": true,
             "maxLength": 65536,
-            "description": "已有的会话 Cookie 字符串；新订阅缺少 sessionToken 时必须包含受支持的会话凭据。仅保留受支持字段，短期加密，不回显。"
+            "description": "已有的受支持会话 Cookie 字符串，可替代 sessionToken 提供刷新凭据；仅保留受支持字段，短期加密，不回显。"
           }
         },
         "additionalProperties": true
@@ -2376,51 +2376,7 @@
           "seats",
           "accepted"
         ],
-        "additionalProperties": false,
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "workflow": {
-                  "const": "subscription"
-                }
-              },
-              "required": [
-                "workflow"
-              ]
-            },
-            "then": {
-              "properties": {
-                "session": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "sessionToken"
-                      ],
-                      "properties": {
-                        "sessionToken": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      }
-                    },
-                    {
-                      "required": [
-                        "cookies"
-                      ],
-                      "properties": {
-                        "cookies": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          }
-        ]
+        "additionalProperties": false
       },
       "Order": {
         "type": "object",

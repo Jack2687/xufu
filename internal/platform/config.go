@@ -34,7 +34,7 @@ func validateConfig(key string, v M) error {
 		"scheduler": {"paused", "max_parallel", "per_user_parallel", "retry_limit", "retry_delay_seconds", "task_timeout_seconds", "queue_limit", "default_country", "link_mode", "engine"},
 		"billing":   {"country", "allow_customer_edit", "address_templates"}, "tiers": {"items"},
 		"proxy":   {"default_id", "global_id", "match_country", "request_timeout_seconds"},
-		"payment": {"enabled", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit", "network_restart_limit", "activation_check_interval_seconds", "activation_check_limit"},
+		"payment": {"enabled", "subscription_flow", "max_parallel", "per_user_parallel", "prepare_timeout_seconds", "quote_timeout_seconds", "result_timeout_seconds", "requests_per_minute", "subscription_wait_seconds", "renewal_check_interval_seconds", "renewal_check_limit", "network_restart_limit", "activation_check_interval_seconds", "activation_check_limit"},
 	}
 	keys, ok := allowed[key]
 	if !ok {
@@ -54,7 +54,7 @@ func validateConfig(key string, v M) error {
 	}
 	for _, k := range keys {
 		if _, ok := v[k]; !ok {
-			if (key == "proxy" && k == "global_id") || (key == "payment" && k == "network_restart_limit") {
+			if (key == "proxy" && k == "global_id") || (key == "payment" && (k == "network_restart_limit" || k == "subscription_flow")) {
 				continue
 			}
 			return bad("缺少配置字段：" + k)
@@ -82,6 +82,9 @@ func validateConfig(key string, v M) error {
 	}
 	switch key {
 	case "payment":
+		if _, present := v["subscription_flow"]; present && !validSubscriptionFlow(str(v, "subscription_flow")) {
+			return bad("订阅办理流程须选择旧流程或新流程")
+		}
 		if e := boolean("enabled"); e != nil {
 			return e
 		}
@@ -267,15 +270,24 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _ := json.Marshal(v)
 	a.transaction(w, r, func(tx pgx.Tx) (any, error) {
+		auditMessage := "保存配置组"
 		if key == "payment" {
-			if _, present := v["network_restart_limit"]; !present {
-				var previous M
-				if e := tx.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='payment' FOR UPDATE").Scan(&previous); e != nil {
-					return nil, e
-				}
-				v["network_restart_limit"] = num(previous, "network_restart_limit", 2)
-				b, _ = json.Marshal(v)
+			var previous M
+			if e := tx.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='payment' FOR UPDATE").Scan(&previous); e != nil {
+				return nil, e
 			}
+			if _, present := v["network_restart_limit"]; !present {
+				v["network_restart_limit"] = num(previous, "network_restart_limit", 2)
+			}
+			// An older admin page must not reset a selection it did not submit.
+			if _, present := v["subscription_flow"]; !present {
+				v["subscription_flow"] = configuredSubscriptionFlow(previous)
+			}
+			if before, after := configuredSubscriptionFlow(previous), configuredSubscriptionFlow(v); before != after {
+				labels := map[string]string{subscriptionFlowLegacy: "旧流程", subscriptionFlowCSLive: "新流程"}
+				auditMessage += "；订阅办理由" + labels[before] + "切换为" + labels[after] + "，仅新建订单生效"
+			}
+			b, _ = json.Marshal(v)
 		}
 		if key == "proxy" {
 			if _, e := tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(1886003)"); e != nil {
@@ -319,7 +331,7 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		_, e := tx.Exec(r.Context(), "UPDATE settings SET value=$2 WHERE key=$1", key, b)
 		if e == nil {
-			e = a.audit(r.Context(), tx, r, "settings.updated", key, "保存配置组")
+			e = a.audit(r.Context(), tx, r, "settings.updated", key, auditMessage)
 		}
 		return M{"ok": true}, e
 	})

@@ -1,6 +1,6 @@
 # cs-live 订阅流程接入
 
-新建 `workflow=subscription` 订单的提链与付款统一调用用户提供的 `cs-live-source.zip` 内 `PaymentClient.Pay`；生效核实、取消续费及原交易恢复也采用该包实现。旧订阅继续兼容原处理路径，独立“结账链接”和“续费管理”工具保留其既有实现。
+后台可选择新建 `workflow=subscription` 订单使用旧流程或新流程，默认保持新流程。新流程的提链与付款调用用户提供的 `cs-live-source.zip` 内 `PaymentClient.Pay`，生效核实、取消续费及原交易恢复也采用该包实现；旧流程沿用改造前备份的完整提链与网页付款处理路径。已受理订单固定原流程，独立“结账链接”和“续费管理”工具保留其既有实现。开关位置、完整对比及旧流程可补充事项见 [新旧流程对照](subscription-flow-comparison.md)。下文描述新流程。
 
 附件 SHA-256：`55aba3b8dd30114574f482f4c762b88d86958cbd965d1e3716369d47049e3687`。单文件按原模块拆入 `internal/cslive/`，不导入命令行和文件检查点存储；原包 payment-action HTML/JS 原样纳入 runtime，官方 SDK 接续运行于服务器私有浏览器。`adapter.go` 连接同步检查点、进度、诊断及请求前订单检查。
 

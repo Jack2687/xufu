@@ -12,7 +12,10 @@ func currencyForCountry(country string) string {
 	return map[string]string{"US": "usd", "PH": "php", "JP": "jpy", "SG": "sgd", "GB": "gbp", "EG": "egp", "TR": "try"}[country]
 }
 
-func (a *App) reserveSubscription(ctx context.Context, tx pgx.Tx, id, user string, card cardInput, keep bool, limit int64, currency, accountHash string) (string, error) {
+func (a *App) reserveSubscription(ctx context.Context, tx pgx.Tx, id, user string, card cardInput, keep bool, limit int64, currency, accountHash, flow string) (string, error) {
+	if !validSubscriptionFlow(flow) {
+		return "", bad("订阅办理流程配置无效")
+	}
 	cfg := a.config(ctx, "payment")
 	if e := a.paymentAdmission(ctx, tx, user, cfg); e != nil {
 		return "", e
@@ -27,7 +30,7 @@ func (a *App) reserveSubscription(ctx context.Context, tx pgx.Tx, id, user strin
 	if e == nil {
 		_, e = tx.Exec(ctx, "INSERT INTO payment_runs(order_id,attempt_id,state,last4,expires_at,hosted_url_enc) VALUES($1,$2,'preparing',$3,now()+($4*interval '1 second'),'')", id, attempt, card.Number[len(card.Number)-4:], ttl)
 	}
-	if e == nil {
+	if e == nil && flow == subscriptionFlowCSLive {
 		_, e = tx.Exec(ctx, "INSERT INTO subscription_protocol(order_id,expires_at) SELECT order_id,credentials_expires_at FROM subscription_runs WHERE order_id=$1", id)
 	}
 	if e == nil {

@@ -221,7 +221,9 @@ func (a *App) adminOrders(w http.ResponseWriter, r *http.Request) {
 	a.list(w, r, `SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.activation,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON o.user_id=u.id WHERE ($1='' OR o.email ILIKE '%'||$1||'%' OR o.id ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%') AND ($2='' OR o.status=$2) ORDER BY o.created_at DESC LIMIT 500`, r.URL.Query().Get("q"), r.URL.Query().Get("status"))
 }
 func (a *App) adminOrderDetail(w http.ResponseWriter, r *http.Request) {
-	orders, e := a.query(r.Context(), "SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.activation,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=$1", r.PathValue("id"))
+	orders, e := a.query(r.Context(), `SELECT o.id,o.user_id,o.product_id,o.product_name,o.email,o.country,o.seats,o.status,o.fee,o.source,o.workflow,o.keep_renewal,o.renewal,o.activation,o.note,o.created_at,o.updated_at,o.price_snapshot,u.email AS owner,
+ CASE WHEN o.workflow<>'subscription' THEN '' WHEN EXISTS(SELECT 1 FROM subscription_protocol p WHERE p.order_id=o.id) THEN 'cslive' ELSE 'legacy' END AS subscription_flow
+ FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=$1`, r.PathValue("id"))
 	if e != nil || len(orders) == 0 {
 		fail(w, 404, "订单不存在")
 		return
