@@ -134,28 +134,33 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 			return nil, e
 		}
 		var n int
-		flow := ""
+		flow, paymentFlow := "", ""
 		checkoutType := "hosted"
 		if v.Prepare {
 			var paymentConfig M
 			if e := tx.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='payment' FOR SHARE").Scan(&paymentConfig); e != nil {
 				return nil, e
 			}
-			flow = configuredSubscriptionFlow(paymentConfig)
+			flow = configuredCheckoutFlow(paymentConfig)
+			paymentFlow = configuredSubscriptionFlow(paymentConfig)
 			checkoutType = configuredProductCheckoutType(paymentConfig, v.Product)
 			if !validCheckoutType(checkoutType) {
 				return nil, businessError{409, "该套餐的结账链接配置无效，请联系运营"}
 			}
-			if !validSubscriptionFlow(flow) {
+			if !validSubscriptionFlow(flow) || full && !validSubscriptionFlow(paymentFlow) {
 				return nil, businessError{409, "订阅办理流程配置无效，请联系运营"}
 			}
-			if full && (paymentConfig["enabled"] != true || (flow == subscriptionFlowLegacy && !a.paymentEnabled(r.Context()))) {
+			if full && (paymentConfig["enabled"] != true || (paymentFlow == subscriptionFlowLegacy && !a.paymentEnabled(r.Context()))) {
 				return nil, businessError{409, "订阅付款暂不可用"}
 			}
-			if _, e := inspectSessionMode(v.Session, flow == subscriptionFlowCSLive); e != nil {
+			inspectPaymentFlow := ""
+			if full {
+				inspectPaymentFlow = paymentFlow
+			}
+			if _, e := inspectSessionForFlows(v.Session, flow, inspectPaymentFlow); e != nil {
 				return nil, e
 			}
-			if full && flow == subscriptionFlowLegacy && checkoutType == "oaics" {
+			if full && paymentFlow == subscriptionFlowLegacy && checkoutType == "oaics" {
 				credentials, _, err := sessionCredentials(v.Session, sessionInfo)
 				if err != nil {
 					return nil, err
@@ -222,7 +227,7 @@ func (a *App) createOrder(w http.ResponseWriter, r *http.Request) {
 				return nil, e
 			}
 			if full {
-				attempt, err := a.reserveSubscription(r.Context(), tx, id, u.ID, v.Card, v.KeepRenewal, v.PaymentLimit, v.PaymentCurrency, hash(sessionInfo.AccountID), flow)
+				attempt, err := a.reserveSubscription(r.Context(), tx, id, u.ID, v.Card, v.KeepRenewal, v.PaymentLimit, v.PaymentCurrency, hash(sessionInfo.AccountID), paymentFlow)
 				if err != nil {
 					return nil, err
 				}

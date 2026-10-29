@@ -17,6 +17,20 @@ type protocolCheckoutClient interface {
 	CreateCheckout(context.Context, cslive.Session, cslive.CreateCheckoutOptions) (cslive.CheckoutResult, error)
 }
 
+type legacyCheckoutGuard struct {
+	base  http.RoundTripper
+	guard *protocolCheckoutRun
+}
+
+func (t *legacyCheckoutGuard) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() != "ipinfo.io" {
+		if err := t.guard.guardIP(req.Context()); err != nil {
+			return nil, checkoutFailure(cslive.ErrorCode(err), false, false)
+		}
+	}
+	return t.base.RoundTrip(req)
+}
+
 type protocolCheckoutRun struct {
 	mu      sync.Mutex
 	a       *App
@@ -180,5 +194,15 @@ func (a *App) generateProtocolCheckout(ctx context.Context, j *Job, endpoint str
 	if !valid || u == nil || path.Base(u.Path) != result.CheckoutID || strings.Contains(result.CheckoutURL, session.AccessToken) || strings.Contains(result.CheckoutURL, session.SessionToken) {
 		return checkoutOutput{}, checkoutFailure("checkout_result_unknown", false, run.written || result.CheckoutID != "")
 	}
-	return checkoutOutput{URL: result.CheckoutURL}, nil
+	out := checkoutOutput{URL: result.CheckoutURL}
+	if result.Session != nil {
+		s := result.Session
+		if s.AccessToken == "" || s.AccountID != in.AccountID || !strings.EqualFold(s.Email, in.Email) {
+			return checkoutOutput{}, checkoutFailure("account_mismatch", false, true)
+		}
+		// The next stage must receive refreshed credentials from this checkout,
+		// not the pre-refresh token copied at admission. Keep authorization TTLs.
+		out.Credentials = &checkoutInput{AccessToken: s.AccessToken, AccountID: s.AccountID, Email: s.Email, SessionToken: s.SessionToken, Cookies: s.Cookies}
+	}
+	return out, nil
 }

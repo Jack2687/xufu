@@ -22,7 +22,7 @@ workflow=subscription 通过 cs-live-source 的完整 Pay 调用实现服务端�
 
 ## 兼容与监控
 
-独立结账链接按 payment.subscription_flow 在受理事务中选择执行器，并保存 checkout_runs.flow；历史提链默认 legacy。旧流程用系统 curl：long 为 iOS/Hosted 真实直返长链或 Stripe init，short 为 Web/Custom 官方短路由；两套新订单受理时从 payment.checkout_types 按 product_id 读取类型，保存到 checkout_runs.checkout_type；新流程将该类型传给 cs-live CreateCheckout，不挂付款检查点，不调用 Pay/Recover。两套流程使用逐套餐配置；新协议提链与付款固定按本单选择执行，不用上游模式切换或拦截，历史 auto 记录保留默认入口，均拒绝异单链接及缺失 URL，未知结果不重新创建。新 link 订单禁止站内付款；旧单的 Chromium 付款与旧恢复路径继续兼容。独立续费工具无需订单、账单或付款，使用全局代理，并可接续同账号待核实取消，提交标记不清零。
+独立结账链接按 payment.checkout_flow 在受理事务中选择执行器，并保存 checkout_runs.flow；历史提链默认 legacy。旧流程用系统 curl：long 为 iOS/Hosted 真实直返长链或 Stripe init，short 为 Web/Custom 官方短路由；两套新订单受理时从 payment.checkout_types 按 product_id 读取类型，保存到 checkout_runs.checkout_type；新流程将该类型传给 cs-live CreateCheckout，不挂付款检查点，不调用 Pay/Recover。两套流程使用逐套餐配置；新协议提链与付款固定按本单选择执行，不用上游模式切换或拦截，历史 auto 记录保留默认入口，均拒绝异单链接及缺失 URL，未知结果不重新创建。新 link 订单禁止站内付款；旧单的 Chromium 付款与旧恢复路径继续兼容。独立续费工具无需订单、账单或付款，使用全局代理，并可接续同账号待核实取消，提交标记不清零。
 
 支付全监控记录白名单阶段、时间、结果、错误分类、HTTP 状态、请求关联编号、网络分段耗时与实际链接历史。详细信息仅管理员可见，原始报文、授权、卡片及完整账单不投影。异步诊断与关键资金记录的边界见 [授权与监控](session-and-payment-monitoring.md)。
 

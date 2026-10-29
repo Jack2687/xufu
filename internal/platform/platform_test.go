@@ -60,6 +60,11 @@ func setupTest(t *testing.T) *harness {
 		}
 		db.Close()
 	})
+	// Most protocol fixtures exercise the full new flow explicitly. Installation
+	// defaults are tested separately from the fixture execution choice.
+	if _, e = app.DB.Exec(ctx, `UPDATE settings SET value=value || '{"checkout_flow":"cslive","subscription_flow":"cslive"}'::jsonb WHERE key='payment'`); e != nil {
+		t.Fatal(e)
+	}
 	h := &harness{t: t, a: app, h: app.Handler()}
 	h.admin = h.login("admin@test.local", "LocalTestOnly-LongPassword")
 	h.member = h.register("member@test.local")

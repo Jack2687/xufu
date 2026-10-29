@@ -15,6 +15,15 @@ func configuredSubscriptionFlow(cfg M) string {
 	return str(cfg, "subscription_flow")
 }
 
+// The checkout stage and payment/post-payment stage can be selected separately.
+// Before the split is first saved, preserve the installation's existing choice.
+func configuredCheckoutFlow(cfg M) string {
+	if _, present := cfg["checkout_flow"]; !present {
+		return configuredSubscriptionFlow(cfg)
+	}
+	return str(cfg, "checkout_flow")
+}
+
 func validSubscriptionFlow(flow string) bool {
 	return flow == subscriptionFlowLegacy || flow == subscriptionFlowCSLive
 }

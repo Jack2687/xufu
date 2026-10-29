@@ -71,6 +71,9 @@ func (r *protocolRun) client(ttl int) (protocolPaymentClient, func(), error) {
 			return err
 		}
 		if method == "POST" && u.Host == "chatgpt.com" && u.Path == "/backend-api/payments/checkout" && r.job != nil {
+			if r.checkoutFlow == subscriptionFlowLegacy {
+				return cslive.Failure("checkout_result_unknown")
+			}
 			if err = r.a.BeforeSideEffect(ctx, r.job); err != nil {
 				return cslive.Failure("checkpoint_failed")
 			}

@@ -115,6 +115,18 @@ func inspectSessionMode(raw json.RawMessage, refreshable bool) (SessionInfo, err
 	}
 	return info, nil
 }
+func inspectSessionForFlows(raw json.RawMessage, checkoutFlow, paymentFlow string) (SessionInfo, error) {
+	info, err := inspectSessionMode(raw, checkoutFlow == subscriptionFlowCSLive)
+	if err == nil && paymentFlow == subscriptionFlowCSLive {
+		var credentials checkoutInput
+		credentials, _, err = sessionCredentials(raw, info)
+		if err == nil {
+			_, err = protocolSession(credentials)
+		}
+	}
+	return info, err
+}
+
 func (a *App) checkSession(w http.ResponseWriter, r *http.Request) {
 	var v struct {
 		Session  json.RawMessage `json:"session"`
@@ -127,13 +139,20 @@ func (a *App) checkSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "检查过于频繁，请稍后再试")
 		return
 	}
-	flow := configuredSubscriptionFlow(a.config(r.Context(), "payment"))
+	cfg := a.config(r.Context(), "payment")
+	flow, paymentFlow := configuredCheckoutFlow(cfg), ""
+	if v.Workflow == "subscription" {
+		paymentFlow = configuredSubscriptionFlow(cfg)
+	}
 	usesFlow := v.Workflow == "subscription" || v.Workflow == "checkout"
-	if usesFlow && !validSubscriptionFlow(flow) {
+	if usesFlow && (!validSubscriptionFlow(flow) || v.Workflow == "subscription" && !validSubscriptionFlow(paymentFlow)) {
 		fail(w, 409, "订阅办理流程配置无效，请联系运营")
 		return
 	}
-	info, e := inspectSessionMode(v.Session, usesFlow && flow == subscriptionFlowCSLive)
+	if !usesFlow {
+		flow = subscriptionFlowLegacy
+	}
+	info, e := inspectSessionForFlows(v.Session, flow, paymentFlow)
 	if e != nil {
 		fail(w, 400, e.Error())
 		return

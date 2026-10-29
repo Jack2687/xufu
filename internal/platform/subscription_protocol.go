@@ -22,7 +22,7 @@ type protocolCardSlot struct {
 func (a *App) subscriptionEnabled(ctx context.Context) bool {
 	cfg := a.config(ctx, "payment")
 	flow := configuredSubscriptionFlow(cfg)
-	return cfg["enabled"] == true && validSubscriptionFlow(flow) && (flow != subscriptionFlowLegacy || a.paymentEnabled(ctx))
+	return cfg["enabled"] == true && validSubscriptionFlow(configuredCheckoutFlow(cfg)) && validSubscriptionFlow(flow) && (flow != subscriptionFlowLegacy || a.paymentEnabled(ctx))
 }
 
 func (a *App) isProtocolSubscription(ctx context.Context, id string) bool {
@@ -113,6 +113,7 @@ type protocolRun struct {
 	ctx                                         context.Context
 	id, attempt, lease, account, email, country string
 	keep                                        bool
+	checkoutFlow                                string
 	maxAmount                                   int64
 	currency                                    string
 	job                                         *Job
@@ -178,11 +179,11 @@ func (a *App) executeProtocolSubscription(parent context.Context, j *Job) {
 	go run.heartbeat(ctx, cancel, done)
 	defer func() { cancel(); <-done }()
 	var credentials checkoutInput
-	var enc, product, checkoutType string
+	var enc, product, checkoutType, checkoutFlow, workspace string
 	var seats, premium int
-	err = a.DB.QueryRow(ctx, `SELECT c.credentials_enc,o.product_id,o.seats,c.premium_seats,o.country,o.keep_renewal,o.email,s.max_amount,s.currency,c.checkout_type
- FROM checkout_runs c JOIN orders o ON o.id=c.order_id JOIN subscription_runs s ON s.order_id=o.id WHERE o.id=$1`, run.id).
-		Scan(&enc, &product, &seats, &premium, &run.country, &run.keep, &run.email, &run.maxAmount, &run.currency, &checkoutType)
+	err = a.DB.QueryRow(ctx, `SELECT c.credentials_enc,o.product_id,o.seats,c.premium_seats,o.country,o.keep_renewal,o.email,s.max_amount,s.currency,c.checkout_type,c.flow,c.workspace_name
+ FROM checkout_runs c JOIN orders o ON o.id=c.order_id JOIN subscription_runs s ON s.order_id=o.id WHERE o.id=$1 AND c.credentials_expires_at>now()`, run.id).
+		Scan(&enc, &product, &seats, &premium, &run.country, &run.keep, &run.email, &run.maxAmount, &run.currency, &checkoutType, &checkoutFlow, &workspace)
 	if err != nil {
 		run.fail(err)
 		return
@@ -193,9 +194,23 @@ func (a *App) executeProtocolSubscription(parent context.Context, j *Job) {
 		return
 	}
 	run.account = credentials.AccountID
+	run.checkoutFlow = checkoutFlow
 	session, err := protocolSession(credentials)
 	if err != nil {
 		run.fail(cslive.Failure("session_token_required"))
+		return
+	}
+	var prepared *cslive.PreparedCheckout
+	if checkoutFlow == subscriptionFlowLegacy {
+		credentials.Product, credentials.Country, credentials.Workspace = product, run.country, workspace
+		credentials.Seats, credentials.PremiumSeats, credentials.CheckoutType = seats, premium, checkoutType
+		prepared, err = run.prepareLegacyCheckout(credentials)
+		if err != nil {
+			run.fail(err)
+			return
+		}
+	} else if checkoutFlow != subscriptionFlowCSLive {
+		run.fail(cslive.Failure("invalid_request"))
 		return
 	}
 	client, closeClient, err := run.client(ttl)
@@ -211,7 +226,7 @@ func (a *App) executeProtocolSubscription(parent context.Context, j *Job) {
 	options := cslive.PayOptions{Country: run.country, Plan: plan, CheckoutType: protocolCheckoutType(checkoutType), Billing: cslive.Billing{
 		Name: strings.TrimSpace(str(billing, "first_name") + " " + str(billing, "last_name")), Email: run.email,
 		Line1: str(billing, "line1"), City: str(billing, "city"), State: str(billing, "state"), PostalCode: str(billing, "postal_code"), Country: str(billing, "country"),
-	}, ApprovePayment: run.approve}
+	}, ApprovePayment: run.approve, PreparedCheckout: prepared}
 	if strings.HasPrefix(plan, "team") {
 		options.Seats = seats
 		if plan == "team5x" {

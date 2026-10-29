@@ -40,7 +40,10 @@ type checkoutInput struct {
 	Product, Country, Mode, Workspace string
 	Seats, PremiumSeats               int
 }
-type checkoutOutput struct{ URL string }
+type checkoutOutput struct {
+	URL, CheckoutID, ProcessorEntity, PublishableKey, ClientSecret, ReturnURL string
+	Credentials                                                               *checkoutInput
+}
 type checkoutError struct {
 	Code           string
 	Retry, Unknown bool
@@ -263,6 +266,15 @@ func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, bef
 		return out, e
 	}
 	cs := str(result, "checkout_session_id")
+	out.CheckoutID = cs
+	out.ProcessorEntity = str(result, "processor_entity")
+	if out.ProcessorEntity == "" {
+		out.ProcessorEntity = "openai_llc"
+		if in.Country == "GB" {
+			out.ProcessorEntity = "openai_ie"
+		}
+	}
+	out.PublishableKey, out.ClientSecret, out.ReturnURL = str(result, "publishable_key"), str(result, "client_secret"), str(result, "confirm_return_url")
 	if in.Mode == "short" {
 		entity := str(result, "processor_entity")
 		if entity == "" {
@@ -287,6 +299,7 @@ func generateCheckout(ctx context.Context, c *http.Client, in checkoutInput, bef
 		if pk == "" {
 			pk = legacyCheckoutPublishableKey
 		}
+		out.PublishableKey = pk
 		if !strings.HasPrefix(pk, "pk_") {
 			return out, checkoutFailure("checkout_result_unknown", false, true)
 		}

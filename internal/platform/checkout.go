@@ -196,6 +196,22 @@ func (a *App) finishCheckout(ctx context.Context, j *Job, result checkoutOutput,
 		if err != nil {
 			return err
 		}
+		if workflow == "subscription" && paymentState == "preparing" && result.Credentials != nil {
+			raw, err := json.Marshal(result.Credentials)
+			if err != nil {
+				return err
+			}
+			sealed, err := a.encrypt(string(raw))
+			if err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, "UPDATE checkout_runs SET credentials_enc=$2 WHERE order_id=$1", j.OrderID, sealed); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, "UPDATE subscription_runs SET credentials_enc=$2,updated_at=now() WHERE order_id=$1", j.OrderID, sealed); err != nil {
+				return err
+			}
+		}
 		if _, e = tx.Exec(ctx, "UPDATE checkout_runs SET hosted_url_enc=$2,link_expires_at=now()+interval '30 minutes',credentials_enc=CASE WHEN $3 THEN credentials_enc ELSE '' END WHERE order_id=$1", j.OrderID, encrypted, workflow == "subscription" && paymentState == "preparing"); e != nil {
 			return e
 		}
@@ -310,7 +326,7 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 		return
 	}
 	ttl := num(cfg, "task_timeout_seconds", 180)
-	if flow == subscriptionFlowCSLive && workflow == "link" {
+	if flow == subscriptionFlowCSLive {
 		ttl = max(ttl, 255)
 	}
 	task, cancel := context.WithTimeout(ctx, time.Duration(ttl)*time.Second)
@@ -354,19 +370,28 @@ func (a *App) executeCheckout(ctx context.Context, j *Job) {
 }
 
 func (a *App) runCheckoutFlow(ctx context.Context, j *Job, endpoint string, in checkoutInput, flow, workflow string) (checkoutOutput, error) {
-	if workflow == "link" && flow == subscriptionFlowCSLive {
+	if flow == subscriptionFlowCSLive {
 		return a.generateProtocolCheckout(ctx, j, endpoint, in)
 	}
 	if flow != subscriptionFlowLegacy {
 		return checkoutOutput{}, checkoutFailure("preparation_failed", false, false)
 	}
-	client, closeClient, err := newLegacyCheckoutClient(ctx, endpoint)
+	factory := newLegacyCheckoutClient
+	if a.legacyCheckoutClient != nil {
+		factory = a.legacyCheckoutClient
+	}
+	client, closeClient, err := factory(ctx, endpoint)
 	if err != nil {
 		return checkoutOutput{}, err
 	}
 	defer closeClient()
+	// Recheck the same bound exit before each legacy business request as well,
+	// including Stripe init. Keep the unwrapped client only for IP probes.
+	guard := &protocolCheckoutRun{a: a, job: j, country: in.Country, probe: client}
+	guarded := *client
+	guarded.Transport = &legacyCheckoutGuard{base: client.Transport, guard: guard}
 	// generator.py uses the supplied access token directly for both modes.
-	return generateCheckout(a.providerContext(ctx, j.OrderID, "checkout"), client, in, func() error { return a.BeforeSideEffect(ctx, j) })
+	return generateCheckout(a.providerContext(ctx, j.OrderID, "checkout"), &guarded, in, func() error { return a.BeforeSideEffect(ctx, j) })
 }
 
 func (a *App) RunCheckout(ctx context.Context) {

@@ -9,11 +9,18 @@ import (
 
 // Entire public Pay + Recover entry points, with no network and no real card.
 func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
-	for _, returnedMode := range []string{"custom", "hosted", "redirect", "", "unrecognized"} {
+	for _, returnedMode := range []string{"prepared", "custom", "hosted", "redirect", "", "unrecognized"} {
 		for _, mode := range []string{"success", "unknown", "action_required", "declined", "authorized"} {
 			t.Run(returnedMode+"/"+mode, func(t *testing.T) {
 				flow, tr, saved := flowFixture(t, true)
 				creates, confirms, cancels, refreshes, approvals := 0, 0, 0, 0, 0
+				imported := returnedMode == "prepared"
+				wantCreates, wantRefreshes := 1, 2
+				var prepared *PreparedCheckout
+				if imported {
+					wantCreates, wantRefreshes = 0, 1
+					prepared = &PreparedCheckout{CheckoutID: "oaics_Fixture", URL: "https://chatgpt.com/checkout/openai_llc/oaics_Fixture", ProcessorEntity: "openai_llc", PublishableKey: "pk_test_Fixture"}
+				}
 				recovering := false
 				tr.request = func(method, path string, opts protocol_RequestOptions) (*protocol_HTTPResponse, error) {
 					switch path {
@@ -23,6 +30,9 @@ func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
 						r.Headers.Add("Set-Cookie", "oai-did=11111111-1111-4111-8111-111111111111; Path=/; Secure")
 						return r, nil
 					case "/api/auth/session":
+						if imported && confirms == 0 {
+							t.Fatal("import repeated pre-checkout refresh")
+						}
 						refreshes++
 						return response(200, protocol_Map{"accessToken": "new-at", "account": protocol_Map{"id": "account"}}), nil
 					case "/backend-api/accounts/check/v4-2023-04-27":
@@ -46,8 +56,8 @@ func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
 						if !strings.Contains(payload, `"checkout_ui_mode":"custom"`) {
 							t.Fatal("short checkout did not request custom mode")
 						}
-						if recovering {
-							t.Fatal("recovery created checkout")
+						if imported || recovering {
+							t.Fatal("recovery or import created checkout")
 						}
 						return response(200, protocol_Map{"checkout_session_id": "oaics_Fixture", "checkout_ui_mode": returnedMode, "url": "https://pay.openai.com/c/pay/oaics_Fixture#ignored", "publishable_key": "pk_test_Fixture"}), nil
 					case "/backend-api/payments/checkout/taxes":
@@ -90,7 +100,7 @@ func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
 						return nil, nil
 					}
 				}
-				result, err := flow.client.Pay(context.Background(), model_Session{AccessToken: "old-at", SessionToken: "session", AccountID: "account", Email: "fixture@example.com"}, model_Card{Number: "4242424242424242", CVC: "123", ExpMonth: "12", ExpYear: "2035"}, gptpay_PayOptions{Country: "PH", Plan: "pro20x", CheckoutType: "oaics", Billing: model_Billing{Name: "QA Fixture", Email: "fixture@example.com", Country: "US", Line1: "100 Test Street", City: "New York", State: "NY", PostalCode: "10001"}, ApprovePayment: func(amount int64, currency string) (bool, error) {
+				result, err := flow.client.Pay(context.Background(), model_Session{AccessToken: "old-at", SessionToken: "session", AccountID: "account", Email: "fixture@example.com"}, model_Card{Number: "4242424242424242", CVC: "123", ExpMonth: "12", ExpYear: "2035"}, gptpay_PayOptions{PreparedCheckout: prepared, Country: "PH", Plan: "pro20x", CheckoutType: "oaics", Billing: model_Billing{Name: "QA Fixture", Email: "fixture@example.com", Country: "US", Line1: "100 Test Street", City: "New York", State: "NY", PostalCode: "10001"}, ApprovePayment: func(amount int64, currency string) (bool, error) {
 					approvals++
 					if amount != 1500 || currency != "PHP" {
 						t.Fatal("incorrect tax quote")
@@ -103,7 +113,7 @@ func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
 				if result.Checkpoint.Metadata["checkout_ui_mode"] != "custom" || result.Checkpoint.Metadata["hosted_url"] != nil {
 					t.Fatal("upstream mode changed the selected short flow")
 				}
-				if creates != 1 || confirms != 1 || approvals != 1 {
+				if creates != wantCreates || confirms != 1 || approvals != 1 {
 					t.Fatalf("unexpected counts: creates=%d confirms=%d approvals=%d code=%s", creates, confirms, approvals, result.ErrorCode)
 				}
 				want := map[string]string{"success": "charged", "unknown": "unknown", "action_required": "action_required", "declined": "not_charged", "authorized": "authorized"}[mode]
@@ -111,7 +121,7 @@ func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
 					t.Fatalf("payment=%s want=%s code=%s warning=%s", result.Payment, want, result.ErrorCode, result.WarningCode)
 				}
 				if mode == "success" {
-					if result.Activation != "active" || result.Renewal != "off" || cancels != 1 || refreshes != 2 {
+					if result.Activation != "active" || result.Renewal != "off" || cancels != 1 || refreshes != wantRefreshes {
 						t.Fatal("incomplete subscription lifecycle", result.WarningCode, cancels, refreshes)
 					}
 				} else if cancels != 0 {
@@ -126,7 +136,7 @@ func TestPayAndRecoverNeverCreateASecondPayment(t *testing.T) {
 				if mode == "unknown" || mode == "action_required" {
 					recovering = true
 					recovered, e := flow.client.Recover(context.Background(), result.Checkpoint)
-					if e != nil || recovered.Payment != "charged" || recovered.Renewal != "off" || confirms != 1 || creates != 1 {
+					if e != nil || recovered.Payment != "charged" || recovered.Renewal != "off" || confirms != 1 || creates != wantCreates {
 						t.Fatal("recovery did not verify original payment", e, recovered.ErrorCode, recovered.WarningCode)
 					}
 				}

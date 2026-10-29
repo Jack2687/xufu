@@ -12,6 +12,7 @@ func setSubscriptionFlow(t *testing.T, h *harness, flow string) {
 	t.Helper()
 	cfg := h.a.config(context.Background(), "payment")
 	cfg["subscription_flow"] = flow
+	cfg["checkout_flow"] = flow
 	expect(t, h.request("PUT", "/api/admin/settings/payment", cfg, h.admin, nil), 200)
 }
 

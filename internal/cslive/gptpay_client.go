@@ -56,7 +56,9 @@ type gptpay_PayOptions struct {
 	ExpectedAmount                        *int64
 	CancelRenewal                         *bool
 	ApprovePayment                        model_PaymentApproval
-	FingerprintClockOffsetHours           int
+	// PreparedCheckout continues an existing checkout without running creation again.
+	PreparedCheckout            *PreparedCheckout
+	FingerprintClockOffsetHours int
 }
 
 func (c *gptpay_PaymentClient) validateConfig() error {
@@ -210,6 +212,7 @@ func (c *gptpay_PaymentClient) Pay(ctx context.Context, s model_Session, card mo
 	if e != nil {
 		return model_Result{}, e
 	}
+	t.preparedCheckout = o.PreparedCheckout
 	return t.execute(o.Billing, &card, o.ExpectedAmount, o.ApprovePayment, o.CheckoutType), nil
 }
 
