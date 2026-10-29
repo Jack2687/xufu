@@ -11,8 +11,8 @@ test('hosted approval accepts only a returned official callback for this checkou
  for(const url of [landing.replace('chatgpt.com','evil.example'),landing.replace(id,'cs_test_Other'),landing+'&stripe_session_id='+id,landing.replace('https:','http:'),'https://chatgpt.com/api/anything?stripe_session_id='+id])assert.equal(hostedLanding({success_url:url},id),null)
 })
 
-for(const mode of ['success','separate_verify','resume','readonly','duplicate','wrong_order','ip_changed','missing_login','return_denied','missing_auth','resource_failed','resource_blocked','script_error'])test('hosted merchant approval: '+mode,{timeout:25000},async()=>{
- let confirm=0,approve=0,approvalRequests=0,landings=0,probes=0
+for(const mode of ['success','separate_verify','resume','readonly','duplicate','wrong_order','ip_changed','missing_login','return_denied','missing_auth','resource_failed','resource_blocked','script_error','merchant_resource'])test('hosted merchant approval: '+mode,{timeout:25000},async()=>{
+ let confirm=0,approve=0,approvalRequests=0,landings=0,probes=0,merchantResources=0
  const events=[],buffer=[],pending=[]
  const commands={next:()=>buffer.length?Promise.resolve(buffer.shift()):new Promise(r=>pending.push(r))}
  const send=type=>{const v={value:{type}};pending.length?pending.shift()(v):buffer.push(v)}
@@ -33,7 +33,12 @@ for(const mode of ['success','separate_verify','resume','readonly','duplicate','
    if(req.url()===landing){
      landings++;assert.match(req.headers().cookie||'',/PRIVATE_COOKIE/)
      const pages={return_denied:'Access denied',missing_auth:"<script>fetch('/api/auth/session')</script>",resource_failed:'<script src="https://cdn.oaistatic.com/assets/PRIVATE.js?token=PRIVATE_SECRET"></script>',resource_blocked:'<script src="https://sentinel.openai.com/PRIVATE?token=PRIVATE_SECRET"></script>',script_error:'<script>throw Error("PRIVATE_SECRET")</script>'}
-     return route.fulfill({status:mode==='return_denied'?403:200,contentType:'text/html',body:pages[mode]||verify})
+     return route.fulfill({status:mode==='return_denied'?403:200,contentType:'text/html',body:mode==='merchant_resource'?'<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?PRIVATE_SECRET"></script>':pages[mode]||verify})
+   }
+   if(u.hostname==='challenges.cloudflare.com') {
+     merchantResources++;assert.equal((req.headers().cookie||'').includes('PRIVATE_COOKIE'),false)
+     // Local fixture verifies resource delivery only; no real challenge runs.
+     return route.fulfill({status:200,contentType:'text/javascript',body:verify.replace(/^<script>|<\/script>$/g,'')})
    }
    if(u.pathname==='/api/auth/session')return json({user:null,private:'PRIVATE_SECRET'})
    if(u.hostname==='cdn.oaistatic.com')return route.abort('connectionreset')
@@ -47,7 +52,7 @@ for(const mode of ['success','separate_verify','resume','readonly','duplicate','
  const check=['resume','readonly'].includes(mode)
  const input={url:'https://pay.openai.com/c/pay/'+id,session_cookies:mode==='missing_login'?'':'__Secure-next-auth.session-token=PRIVATE_COOKIE',resume_approval:mode==='resume',saved_quote:{amount:1500,currency:'usd'},mode:check?'check':'prepare',proxy:{server:'http://127.0.0.1:18799',username:'order',password:'PRIVATE_PROXY'},expected_ip:'203.0.113.2',proxy_expires_at:Date.now()+60000,card:{number:'4242424242424242',month:'12',year:'2035',cvc:'123'},billing:{first_name:'QA',last_name:'Test',line1:'Test Street',city:'Portland',state:'OR',postal_code:'97205'},prepare_seconds:5,quote_seconds:4,result_seconds:3}
  await run(input,commands,e=>{events.push(e);if(e.type==='quote')send('confirm');if(e.type==='approval_requested'){approvalRequests++;send('approve')}},deps)
- const success=['success','separate_verify','resume','duplicate'].includes(mode)
+ const success=['success','separate_verify','resume','duplicate','merchant_resource'].includes(mode)
  assert.equal(events.at(-1).state,success?'succeeded':'review',JSON.stringify(events))
  assert.equal(confirm,check?0:1)
  assert.equal(approve,success?1:0)
@@ -55,6 +60,10 @@ for(const mode of ['success','separate_verify','resume','readonly','duplicate','
  if(['readonly','missing_login','ip_changed'].includes(mode))assert.equal(landings,0)
  const pageEvents=events.filter(e=>e.diagnostics?.page_event)
  if(success)assert.ok(pageEvents.some(e=>e.diagnostics.page_event==='approval_observed'))
+ if(mode==='merchant_resource') {
+   assert.equal(merchantResources,1)
+   assert.ok(pageEvents.some(e=>e.diagnostics.page_host==='challenges.cloudflare.com'&&e.diagnostics.page_event==='resource_loaded'))
+ }
  if(['return_denied','missing_auth','resource_failed','resource_blocked','script_error'].includes(mode)) {
    assert.equal(pageEvents.at(-1).diagnostics.page_event,'approval_not_requested')
    assert.equal(confirm,1);assert.equal(approve,0)

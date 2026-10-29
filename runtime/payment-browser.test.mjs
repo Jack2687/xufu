@@ -29,6 +29,8 @@ test('payment identity, quote and result require current session and final tax',
  assert.equal(confirmMatches('https://api.stripe.com/v1/payment_pages/'+id+'/confirm',new URLSearchParams({expected_amount:'1500'}),id,{amount:1500}),true)
  assert.equal(confirmMatches('https://api.stripe.com/v1/payment_pages/'+id+'/confirm',new URLSearchParams({expected_amount:'1501'}),id,{amount:1500}),false)
  assert.equal(allowedHost('api.stripe.com.evil.example'),false);assert.equal(allowedHost('127.0.0.1'),false)
+ assert.equal(allowedHost('challenges.cloudflare.com'),true)
+ for(const host of ['cloudflare.com','other.cloudflare.com','challenges.cloudflare.com.evil.example'])assert.equal(allowedHost(host),false)
 })
 
 test('hosted init, tax update and paid confirm use checkout session_id, never page id',()=>{

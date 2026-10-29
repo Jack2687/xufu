@@ -19,7 +19,7 @@ export function checkoutIdentity(raw) {
   return m[1]
 }
 export function allowedHost(host) {
-  return ['pay.openai.com','checkout.stripe.com','chatgpt.com','cdn.oaistatic.com','tcr9i.chat.openai.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
+  return ['pay.openai.com','checkout.stripe.com','chatgpt.com','cdn.oaistatic.com','tcr9i.chat.openai.com','challenges.cloudflare.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
 }
 export function paymentProxy(input) {
   const p=input.proxy

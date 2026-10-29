@@ -36,7 +36,7 @@ func TestBrowserProxyBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		host, auth string
 		want       int
-	}{{"pay.openai.com:443", "", 407}, {"evil.example:443", p.Password, 403}, {"pay.openai.com:80", p.Password, 403}, {"pay.openai.com:443", p.Password, 200}} {
+	}{{"pay.openai.com:443", "", 407}, {"evil.example:443", p.Password, 403}, {"pay.openai.com:80", p.Password, 403}, {"challenges.cloudflare.com:443", "", 407}, {"challenges.cloudflare.com.evil.example:443", p.Password, 403}, {"other.cloudflare.com:443", p.Password, 403}, {"challenges.cloudflare.com:80", p.Password, 403}, {"pay.openai.com:443", p.Password, 200}, {"challenges.cloudflare.com:443", p.Password, 200}} {
 		c, e := net.Dial("tcp", u.Host)
 		if e != nil {
 			t.Fatal(e)
@@ -56,14 +56,16 @@ func TestBrowserProxyBoundaries(t *testing.T) {
 			if _, e = io.ReadFull(reader, buf); e != nil || string(buf) != "opaque tls bytes" {
 				t.Fatal("tunnel altered bytes", e)
 			}
-			cancel()
-			if _, e = reader.ReadByte(); e == nil {
-				t.Fatal("cancel left tunnel open")
+			if tc.host == "challenges.cloudflare.com:443" {
+				cancel()
+				if _, e = reader.ReadByte(); e == nil {
+					t.Fatal("cancel left tunnel open")
+				}
 			}
 		}
 		c.Close()
 	}
-	if calls.Load() != 1 {
+	if calls.Load() != 2 {
 		t.Fatal("blocked target reached supplier")
 	}
 }
