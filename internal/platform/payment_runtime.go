@@ -20,6 +20,8 @@ type cardInput struct {
 	CVC    string `json:"cvc"`
 }
 type paymentInput struct {
+	ResumeApproval bool               `json:"resume_approval,omitempty"`
+	SavedQuote     M                  `json:"saved_quote,omitempty"`
 	SessionCookies string             `json:"session_cookies,omitempty"`
 	Proxy          *browserProxyInput `json:"proxy"`
 	ExpectedIP     string             `json:"expected_ip"`

@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url'
 import fs from 'node:fs'
 import {isIP} from 'node:net'
 import {customIdentity,loginCookies,CustomPayment} from './payment-custom.mjs'
+import {HostedApproval} from './payment-hosted-approval.mjs'
 
 const currencies = new Set(['php','usd','jpy','sgd','gbp','egp','try'])
 export function checkoutIdentity(raw) {
@@ -80,13 +81,16 @@ export async function run(input, commands, emit, dependencies={}) {
     if(dependencies.signal?.aborted)throw Error('cancelled')
     const id=checkoutIdentity(input.url)
     const identity=customIdentity(input.url),custom=identity?new CustomPayment(identity):null
+    const hosted=custom?null:new HostedApproval(id,input.resume_approval===true)
+    if(input.resume_approval){sent=true;quote=input.saved_quote}
     const proxy=paymentProxy(input)
     const {chromium}=dependencies.playwright || await import('playwright')
     const chrome=process.env.PAYMENT_CHROME_PATH || (process.platform==='win32' && fs.existsSync('C:/Program Files/Google/Chrome/Application/chrome.exe')?'C:/Program Files/Google/Chrome/Application/chrome.exe':undefined)
     browser=await chromium.launch({headless:true,executablePath:chrome,proxy,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp','--disable-background-networking','--disable-breakpad']})
     if(dependencies.signal?.aborted)throw Error('cancelled')
     const ctx=await browser.newContext({locale:'en-US',timezoneId:'America/New_York',serviceWorkers:'block',acceptDownloads:false,proxy})
-    if(custom)await ctx.addCookies(loginCookies(input.session_cookies))
+    const hasLogin=!!input.session_cookies
+    if(custom||hasLogin)await ctx.addCookies(loginCookies(input.session_cookies))
     input.session_cookies=''
     const checkExit=async()=>{
       // Only retry a read-only probe through this unchanged proxy context. A
@@ -127,6 +131,16 @@ export async function run(input, commands, emit, dependencies={}) {
       const req=route.request(), u=new URL(req.url())
       if(Date.now()>=input.proxy_expires_at){blocked='proxy_session_expired';return route.abort()}
       if(u.protocol!=='https:' || !allowedHost(u.hostname) || u.username || u.password || (u.port&&u.port!=='443')) return route.abort()
+      if(hosted&&u.hostname==='chatgpt.com'&&u.pathname.startsWith('/backend-api/payments/')&&!['GET','HEAD','OPTIONS'].includes(req.method())) {
+        await observations
+        if(!hasLogin||!hosted.matches(req)||!hosted.ready(latest,quote)||!(sent&&permit)){blocked='duplicate_blocked';return route.abort()}
+        hosted.started=true
+        try{await checkExit()}catch(e){blocked=e.message;return route.abort()}
+        emit({type:'approval_requested',amount:quote.amount,currency:quote.currency,evidence:latest.evidence})
+        const ack=await commands.next()
+        if(ack.value?.type!=='approve'){blocked='duplicate_blocked';return route.abort()}
+        return dependencies.route?dependencies.route(route):route.continue()
+      }
       if(custom) {
         // A page may advance as soon as headers arrive. Finish observing the
         // previous response before authorizing its next dependent operation.
@@ -147,8 +161,13 @@ export async function run(input, commands, emit, dependencies={}) {
     })
     const page=await ctx.newPage()
     page.on('requestfailed',req=>{if(['api.stripe.com','js.stripe.com'].includes(new URL(req.url()).hostname)&&/TUNNEL|PROXY_CONNECTION/.test(req.failure()?.errorText||''))networkFailed=true})
-    page.on('response',res=>{observations=observations.then(async()=>{
+    ctx.on('response',res=>{observations=observations.then(async()=>{
       const u=new URL(res.url())
+      if(hosted&&hosted.started&&hosted.matches(res.request())) {
+        emit({type:'diagnostic',phase:'confirming',http_status:res.status(),code:res.status()>=400?'request_rejected':''})
+        if(res.status()===200)hosted.approvalReturned=true
+        return
+      }
       if(custom&&['chatgpt.com','api.stripe.com'].includes(u.hostname)) {
         const data=await res.json().catch(()=>null)
         const s=custom.observe(res.request(),data,res.status(),snapshot)
@@ -169,15 +188,43 @@ export async function run(input, commands, emit, dependencies={}) {
       if(u.pathname===`/v1/payment_pages/${id}/confirm`&&res.status()===402&&body?.error?.type==='card_error'&&['card_declined','expired_card','incorrect_cvc','incorrect_number'].includes(body.error.code)&&(!body.error.payment_intent||body.error.payment_intent.status==='requires_payment_method'))declined=true
       if(res.status()!==200)return
       const s=snapshot(body,id)
+      hosted?.observe(body,s)
       if(s){latest=s;changedAt=Date.now();responseCount++}
     }).catch(()=>{})})
     const navigate=()=>page.goto(input.url,{waitUntil:'domcontentloaded',timeout:Math.min(input.prepare_seconds*1000,60000)})
+    const continueApproval=async()=>{
+      if(!hasLogin||!hosted?.ready(latest,quote)||hosted.navigated)return
+      hosted.navigated=true
+      await checkExit()
+      stage('approval')
+      await page.goto(hosted.landing.url,{waitUntil:'domcontentloaded',timeout:Math.min(input.prepare_seconds*1000,60000)})
+    }
+    const verifyApproval=async()=>{
+      if(!hosted?.approvalReturned||hosted.verificationOpened||latest?.paid)return
+      hosted.verificationOpened=true
+      await checkExit()
+      // Keep the merchant/SDK page alive. Observe a separate copy of the original
+      // checkout; the existing request guards forbid another confirmation.
+      const verifyPage=await ctx.newPage()
+      await verifyPage.goto(input.url,{waitUntil:'domcontentloaded',timeout:Math.min(input.prepare_seconds*1000,60000)})
+    }
     stage('opening')
     await navigate()
     if(input.mode==='check') {
       const until=Date.now()+input.prepare_seconds*1000
       while(!latest&&Date.now()<until) await pause(250)
       if(latest?.paid) return done('succeeded')
+      if(input.resume_approval&&latest?.open&&quote){
+        permit=true
+        await continueApproval()
+        while(Date.now()<until){
+          if(latest?.paid)return done('succeeded')
+          if(latest?.action)return done('action_required','verification_required')
+          if(blocked)return done('review',blocked)
+          await verifyApproval()
+          await pause(300)
+        }
+      }
       return done(latest?.action?'action_required':'review','result_unconfirmed')
     }
     // No endpoint parameters or verification tokens are synthesized. The current
@@ -241,6 +288,8 @@ export async function run(input, commands, emit, dependencies={}) {
       if(blocked) return done(sent?'review':'failed',blocked)
       if(latest?.action) return done('action_required','verification_required')
       if(latest?.authorized) return done('review','payment_authorized')
+      await continueApproval()
+      await verifyApproval()
       await pause(300)
     }
     // Even an apparently empty response after clicking may have caused a charge.

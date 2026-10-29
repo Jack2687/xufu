@@ -370,9 +370,9 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 			a.paymentMu.Unlock()
 		}()
 		start := a.paymentStart
-		if validCustomCheckoutURL(in.URL) {
+		if browserPaymentURL(in.URL) {
 			cookies, err := a.loadBrowserSession(ctx, id)
-			if err != nil {
+			if err != nil && (validCustomCheckoutURL(in.URL) || in.ResumeApproval) {
 				a.finishPayment(ctx, id, attempt, paymentEvent{State: "failed", Code: "invalid_session"})
 				return
 			}
@@ -454,7 +454,7 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 					if event.Code == "network_verified" {
 						closePhase("completed", "")
 					} else {
-						p := map[string]string{"opening": "opening", "billing": "billing", "pricing": "pricing", "confirming": "confirming", "network_check": "network", "result_check": "checking"}[event.Code]
+						p := map[string]string{"opening": "opening", "billing": "billing", "pricing": "pricing", "confirming": "confirming", "approval": "confirming", "network_check": "network", "result_check": "checking"}[event.Code]
 						if p != "" {
 							closePhase("completed", "")
 							phase = p
@@ -483,6 +483,15 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 						phaseTimer.Reset(time.Duration(in.ResultSeconds+15) * time.Second)
 					} else {
 						phaseTimer.Reset(time.Duration(in.QuoteSeconds+2) * time.Second)
+					}
+				case "approval_requested":
+					command := "approval_denied"
+					if (in.Mode != "check" || in.ResumeApproval) && a.authorizeHostedApproval(ctx, id, attempt, event) == nil {
+						command = "approve"
+					}
+					if proc.Send(paymentCommand{Type: command}) != nil {
+						fallback()
+						return
 					}
 				case "submitted":
 					observedSubmission = true
@@ -822,6 +831,16 @@ func (a *App) checkPayment(w http.ResponseWriter, r *http.Request) {
 		paymentError(w, e)
 		return
 	}
+	resume := strings.HasPrefix(r.URL.Path, "/api/admin/") && r.URL.Query().Get("continue_approval") == "true"
+	var savedQuote M
+	if resume {
+		var ready bool
+		e = tx.QueryRow(ctx, `SELECT p.submitted AND NOT p.approval_started AND EXISTS(SELECT 1 FROM payment_trace_events t WHERE t.order_id=p.order_id AND t.diagnostics->>'diagnostic_source'='submission_attempt' AND (t.diagnostics->>'raw_state'='requires_approval' OR t.diagnostics->>'raw_status'='requires_approval')),jsonb_build_object('amount',p.amount,'currency',p.currency) FROM payment_runs p WHERE p.order_id=$1`, id).Scan(&ready, &savedQuote)
+		if e != nil || !ready || !hostedPaymentURL(raw) {
+			fail(w, 409, "原交易当前无法接续批准")
+			return
+		}
+	}
 	ttl := num(cfg, "prepare_timeout_seconds", 120) + 30
 	_, e = tx.Exec(ctx, "UPDATE payment_runs SET state='checking',expires_at=now()+($2*interval '1 second'),updated_at=now() WHERE order_id=$1", id, ttl)
 	if e == nil {
@@ -831,7 +850,7 @@ func (a *App) checkPayment(w http.ResponseWriter, r *http.Request) {
 		paymentError(w, e)
 		return
 	}
-	a.launchPayment(id, attempt, paymentInput{Mode: "check", URL: raw, PrepareSeconds: num(cfg, "prepare_timeout_seconds", 120)}, ttl)
+	a.launchPayment(id, attempt, paymentInput{Mode: "check", URL: raw, PrepareSeconds: num(cfg, "prepare_timeout_seconds", 120), ResumeApproval: resume, SavedQuote: savedQuote}, ttl)
 	out(w, 202, M{"accepted": true})
 }
 func (a *App) RecoverPayments(ctx context.Context) error {
