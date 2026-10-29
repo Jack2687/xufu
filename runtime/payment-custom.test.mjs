@@ -7,6 +7,20 @@ import {run,snapshot} from './payment-browser.mjs'
 const endpoint='https://chatgpt.com/backend-api/payments/checkout',id='oaics_Test',secret='pi_Test_secret_Private'
 const req=(url,data={},method='POST')=>({url:()=>url,postData:()=>JSON.stringify(data),method:()=>method})
 const quote={amount:1500,currency:'usd'},latest={...quote,taxReady:true}
+
+test('exported long session token uses browser-compatible Auth.js cookie chunks',async()=>{
+ const token='A'.repeat(4381),cookies=loginCookies('__Secure-next-auth.session-token='+token)
+ assert.deepEqual(cookies.map(x=>x.name),['__Secure-next-auth.session-token.0','__Secure-next-auth.session-token.1'])
+ assert.equal(cookies.map(x=>x.value).join(''),token)
+ const raw=cookies.map(x=>x.name+'='+x.value).join('; ')
+ assert.deepEqual(loginCookies(raw),cookies)
+ const b=await chromium.launch({headless:true,executablePath:process.platform==='win32'?'C:/Program Files/Google/Chrome/Application/chrome.exe':undefined})
+ try {
+  const c=await b.newContext();await c.addCookies(cookies)
+  assert.deepEqual((await c.cookies('https://chatgpt.com/')).sort((a,b)=>a.name.localeCompare(b.name)).map(x=>x.value),cookies.map(x=>x.value))
+  assert.equal((await c.cookies('https://api.stripe.com/')).length,0)
+ }finally{await b.close()}
+})
 test('custom browser binds each stage to the checkout and original intent',()=>{
  const flow=new CustomPayment({entity:'openai_llc',id})
  assert.equal(customIdentity('https://chatgpt.com/checkout/openai_llc/'+id).id,id)

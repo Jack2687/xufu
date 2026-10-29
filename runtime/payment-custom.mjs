@@ -10,8 +10,14 @@ export function loginCookies(raw) {
   const cookies=[]
   for(const pair of (raw||'').split(';')) {
     const i=pair.indexOf('='),name=pair.slice(0,i).trim(),value=pair.slice(i+1).trim()
-    if(i>0&&/^__Secure-(?:next-auth|platform)\.session-token(?:\.\d{1,2})?$/.test(name)&&value&&!/[\s;,]/.test(value))
-      cookies.push({name,value,url:'https://chatgpt.com/',secure:true,httpOnly:true,sameSite:'Lax'})
+    if(i>0&&/^__Secure-(?:next-auth|platform)\.session-token(?:\.\d{1,2})?$/.test(name)&&value&&!/[\s;,]/.test(value)) {
+      const cookie={name,value,url:'https://chatgpt.com/',secure:true,httpOnly:true,sameSite:'Lax'}
+      // Auth.js joins numbered chunks. The exported sessionToken can exceed
+      // Chromium's per-cookie limit even though the HTTP client accepts it.
+      if(!/\.\d+$/.test(name)&&value.length>3936) {
+        for(let offset=0;offset<value.length;offset+=3936)cookies.push({...cookie,name:name+'.'+Math.floor(offset/3936),value:value.slice(offset,offset+3936)})
+      }else cookies.push(cookie)
+    }
   }
   if(!cookies.length)throw Error('invalid_session')
   return cookies

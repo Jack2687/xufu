@@ -1,3 +1,8 @@
+# 2026-10-29 导出长 Session Token 的浏览器兼容
+
+- 第六次完整实测在浏览器注入登录态时失败、未提交付款。用户导出的 Session Token 为4381字符；离线用同长度合成值复现Chromium拒绝单个Cookie。现在按Auth.js的3936字符分段和.session-token.0/.1命名注入，已分段Cookie保持原样；不截断或修改Token内容。
+- 新增长Token在真实Chromium中的保存/重组/域隔离验证，通过；不使用真实Token做测试，不请求外网。上线前在新Linux镜像运行全部37项浏览器测试。
+
 # 2026-10-29 Hosted 原交易商户批准接续
 
 - 第五次真实订单在提交后返回 submission_attempt.requires_approval，后续一直等待。只读复查原 Checkout 仍 open/unpaid，并有绑定原结账单的官方 /checkout/verify 回跳地址；尚无成功扣款证据。旧浏览器此前只给短链传递登录Cookie、没有长链批准回跳处理，现为长链也传递可用真实登录态；仅导航上游实际返回且校验为本单的官方回跳，不生成验证令牌或调用伪造付款请求。
