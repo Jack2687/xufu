@@ -233,7 +233,7 @@ func (a *App) adminOrderDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	closures, _ := a.query(r.Context(), "SELECT c.reason,c.prior_status,c.prior_payment_state,c.payment_submitted,c.created_at,u.email AS actor FROM order_closures c JOIN users u ON u.id=c.actor_id WHERE c.order_id=$1", r.PathValue("id"))
-	out(w, 200, M{"order": orders[0], "events": events, "trace": a.paymentTraceDetails(r.Context(), r.PathValue("id")), "closures": closures, "checkout_links": links, "checkout": a.checkoutDetails(r.Context(), r.PathValue("id")), "payment": a.paymentDetails(r.Context(), r.PathValue("id"))})
+	out(w, 200, M{"order": orders[0], "events": events, "trace": a.paymentTraceDetails(r.Context(), r.PathValue("id")), "closures": closures, "checkout_links": links, "billing": a.adminOrderBilling(r.Context(), r.PathValue("id")), "checkout": a.checkoutDetails(r.Context(), r.PathValue("id")), "payment": a.paymentDetails(r.Context(), r.PathValue("id"))})
 }
 func (a *App) adminOrderNote(w http.ResponseWriter, r *http.Request) {
 	var v struct {

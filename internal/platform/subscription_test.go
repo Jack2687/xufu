@@ -111,7 +111,10 @@ func assertSubscriptionPrivate(t *testing.T, h *harness, id string) {
 		if q.cookie != h.admin && (strings.Contains(w.Body.String(), "cs_test_SubscriptionPrivate") || strings.Contains(w.Body.String(), "pay.openai.com") || strings.Contains(w.Body.String(), "checkout_links")) {
 			t.Fatal("customer received administrator checkout link")
 		}
-		for _, secret := range []string{"backend-api/", "TEST_ONLY_NOT_SIGNED", "QA_PROXY_PASSWORD", "credentials_enc", "4242424242424242", "payment_pages", "details_enc", "profile_id", "100 Test Street"} {
+		if q.cookie != h.admin && (strings.Contains(w.Body.String(), "profile_id") || strings.Contains(w.Body.String(), "100 Test Street")) {
+			t.Fatal("customer received administrator billing snapshot")
+		}
+		for _, secret := range []string{"backend-api/", "TEST_ONLY_NOT_SIGNED", "QA_PROXY_PASSWORD", "credentials_enc", "4242424242424242", "payment_pages", "details_enc"} {
 			if strings.Contains(w.Body.String(), secret) {
 				t.Fatal("subscription response leaked", secret)
 			}

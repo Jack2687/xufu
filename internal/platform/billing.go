@@ -86,6 +86,34 @@ func (a *App) saveOrderBillingTx(ctx context.Context, tx pgx.Tx, id string, bill
 	return err
 }
 
+// Administrator-only projection of the saved order snapshot. Reading must
+// never select another profile or substitute the pool's current contents.
+func (a *App) adminOrderBilling(ctx context.Context, id string) M {
+	var sealed string
+	err := a.DB.QueryRow(ctx, "SELECT details_enc FROM order_billing WHERE order_id=$1", id).Scan(&sealed)
+	if err == pgx.ErrNoRows {
+		return M{"state": "not_selected"}
+	}
+	if err != nil {
+		return M{"state": "unavailable"}
+	}
+	raw, err := a.decrypt(sealed)
+	var billing M
+	if err != nil || json.Unmarshal([]byte(raw), &billing) != nil || !validBilling(billing) {
+		return M{"state": "unavailable"}
+	}
+	result := M{"state": "selected"}
+	for _, key := range []string{"profile_id", "first_name", "last_name", "country", "state", "city", "line1", "postal_code"} {
+		// Keep the US state separate from the projection's availability status.
+		if key == "state" {
+			result["region"] = str(billing, key)
+		} else {
+			result[key] = str(billing, key)
+		}
+	}
+	return result
+}
+
 // Caller holds the order lock. Retrying a known, unsubmitted payment keeps the
 // original encrypted snapshot even if the administrator later edits the pool.
 func (a *App) orderBillingTx(ctx context.Context, tx pgx.Tx, id string) (M, error) {

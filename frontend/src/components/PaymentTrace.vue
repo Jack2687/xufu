@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed} from 'vue'
-import {Clock3,RefreshCw,CheckCircle2,AlertTriangle,LoaderCircle} from 'lucide-vue-next'
+import {Clock3,RefreshCw,CheckCircle2,AlertTriangle,LoaderCircle,ChevronRight} from 'lucide-vue-next'
 import {date,type Row} from '../lib'
 const props=defineProps<{events:Row[];links?:Row[];status?:string}>()
 const rounds=computed(()=>Math.max(1,...props.events.map(e=>Number(e.round)||1),...(props.links||[]).map(e=>Number(e.round)||1)))
@@ -10,8 +10,33 @@ const diagnosticValues:Record<string,string>={browser_start:'启动验证浏览�
 const diagnosticText=(key:string,value:unknown)=>typeof value==='boolean'?(value?'是':'否'):key.endsWith('_ms')?`${value} 毫秒`:diagnosticValues[String(value)]||String(value)
 const duration=(v:unknown)=>Number(v)>=1000?`${(Number(v)/1000).toFixed(1)} 秒`:`${Number(v)||0} 毫秒`
 </script>
-<template><section class="payment-trace" aria-label="完整支付链条"><div class="trace-heading"><div><span class="eyebrow">PAYMENT ACTIVITY</span><h3>完整支付链条</h3></div><span class="trace-rounds"><RefreshCw :size="14"/>共 {{rounds}} 轮 · 重建 {{rounds-1}} 次</span></div><p class="trace-hint">时间线自动更新；记录各阶段结果和耗时，敏感凭据与上游请求不在页面中展示。</p><p v-if="!events.length" class="trace-empty">此订单尚无新版阶段记录，可查看下方已有业务记录。历史步骤不会补写为已执行。</p><ol v-else><li v-for="(e,i) in events" :key="i" :class="e.state"><span class="trace-icon"><AlertTriangle v-if="['failed','review'].includes(e.state)" :size="16"/><LoaderCircle v-else-if="e.state==='running'" :size="16"/><Clock3 v-else-if="e.state==='waiting'" :size="16"/><CheckCircle2 v-else :size="16"/></span><div class="trace-content"><div class="trace-title"><b>{{e.label}}</b><span class="trace-state">{{statusLabel[e.state]||e.state}}</span><small>第 {{e.round}} 轮</small><small v-if="e.state!=='running'&&Number(e.elapsed_ms)>0">{{duration(e.elapsed_ms)}}</small></div><p v-if="e.http_status||e.request_id" class="mono">{{e.http_status?'响应 '+e.http_status:''}} {{e.request_id?' · 关联编号 '+e.request_id:''}}</p><p v-if="e.description">{{e.description}}</p><dl v-if="e.diagnostics&&Object.keys(e.diagnostics).length" class="trace-diagnostics"><template v-for="(value,key) in e.diagnostics" :key="key"><dt>{{diagnosticLabels[String(key)]||key}}</dt><dd>{{diagnosticText(String(key),value)}}</dd></template></dl><time>{{date(e.created_at)}}</time></div></li></ol></section></template>
+<template>
+  <section class="payment-trace" aria-label="完整支付链条">
+    <div class="trace-heading"><div><span class="eyebrow">PAYMENT ACTIVITY</span><h3>完整支付链条</h3></div><span class="trace-rounds"><RefreshCw :size="14"/>共 {{rounds}} 轮 · 重建 {{rounds-1}} 次</span></div>
+    <p class="trace-hint">时间线自动更新；点击状态展开详情，查看阶段结果和耗时。</p>
+    <p v-if="!events.length" class="trace-empty">此订单尚无新版阶段记录，可查看下方已有业务记录。历史步骤不会补写为已执行。</p>
+    <ol v-else>
+      <li v-for="(e,i) in events" :key="e.id||i" :class="e.state">
+        <span class="trace-icon"><AlertTriangle v-if="['failed','review'].includes(e.state)" :size="16"/><Clock3 v-else-if="e.state==='waiting'||e.diagnostics?.sdk_waiting" :size="16"/><LoaderCircle v-else-if="e.state==='running'" :size="16"/><CheckCircle2 v-else :size="16"/></span>
+        <details class="trace-content">
+          <summary class="trace-title">
+            <b>{{e.label}}</b><span class="trace-state">{{e.diagnostics?.sdk_waiting?'等待中':statusLabel[e.state]||e.state}}</span>
+            <time :datetime="e.created_at">{{date(e.created_at)}}</time>
+            <small>第 {{e.round}} 轮</small><small v-if="Number(e.elapsed_ms)>0">耗时 {{duration(e.elapsed_ms)}}</small>
+            <ChevronRight class="trace-chevron" :size="14"/>
+          </summary>
+          <div class="trace-body">
+            <p v-if="e.http_status||e.request_id" class="mono">{{e.http_status?'响应 '+e.http_status:''}} {{e.request_id?' · 关联编号 '+e.request_id:''}}</p>
+            <p v-if="e.description">{{e.description}}</p>
+            <dl v-if="e.diagnostics&&Object.keys(e.diagnostics).length" class="trace-diagnostics"><template v-for="(value,key) in e.diagnostics" :key="key"><dt>{{diagnosticLabels[String(key)]||key}}</dt><dd>{{diagnosticText(String(key),value)}}</dd></template></dl>
+            <p v-if="!e.http_status&&!e.request_id&&!e.description&&!Object.keys(e.diagnostics||{}).length">暂无补充详情。</p>
+          </div>
+        </details>
+      </li>
+    </ol>
+  </section>
+</template>
 <style scoped>
-.payment-trace{margin:22px 0;padding:22px;background:#f7f9fc;border:1px solid #e3e9f0;border-radius:14px}.trace-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.trace-heading h3{margin:6px 0}.trace-rounds{display:flex;align-items:center;gap:6px;color:#53647b;font-size:12px;white-space:nowrap}.trace-hint,.trace-empty{color:#77849a;font-size:12px;line-height:1.7}.payment-trace ol{list-style:none;margin:20px 0 0;padding:0}.payment-trace li{display:flex;gap:12px;position:relative;padding:0 0 18px}.payment-trace li:not(:last-child):before{content:'';position:absolute;left:12px;top:25px;bottom:0;width:1px;background:#dbe4ee}.trace-icon{width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:#e5edf8;color:#496c9a;flex-shrink:0}.completed .trace-icon{background:#e1f3e9;color:#268757}.failed .trace-icon,.review .trace-icon{background:#fff0dd;color:#b87014}.trace-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13px}.trace-title small,.trace-content time{font-size:11px;color:#7c899c}.trace-content p{margin:7px 0;color:#65738b;font-size:12px;line-height:1.7}.trace-state{font-size:11px;color:#526880;background:#e8edf3;padding:2px 7px;border-radius:4px}.failed .trace-state,.review .trace-state{color:#a36215;background:#fff0dd}.trace-content time{display:block;margin-top:5px}@media(max-width:650px){.payment-trace{padding:15px}.trace-heading{align-items:flex-start;flex-direction:column}}
+.payment-trace{margin:22px 0;padding:22px;background:#f7f9fc;border:1px solid #e3e9f0;border-radius:14px}.trace-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.trace-heading h3{margin:6px 0}.trace-rounds{display:flex;align-items:center;gap:6px;color:#53647b;font-size:12px;white-space:nowrap}.trace-hint,.trace-empty{color:#77849a;font-size:12px;line-height:1.7}.payment-trace ol{list-style:none;margin:20px 0 0;padding:0}.payment-trace li{display:flex;gap:12px;position:relative;padding:0 0 18px}.payment-trace li:not(:last-child):before{content:'';position:absolute;left:12px;top:25px;bottom:0;width:1px;background:#dbe4ee}.trace-icon{width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:#e5edf8;color:#496c9a;flex-shrink:0}.completed .trace-icon{background:#e1f3e9;color:#268757}.failed .trace-icon,.review .trace-icon{background:#fff0dd;color:#b87014}.trace-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13px}.trace-title small,.trace-content time{font-size:11px;color:#7c899c}.trace-content p{margin:7px 0;color:#65738b;font-size:12px;line-height:1.7}.trace-state{font-size:11px;color:#526880;background:#e8edf3;padding:2px 7px;border-radius:4px}.failed .trace-state,.review .trace-state{color:#a36215;background:#fff0dd}.trace-content{flex:1;min-width:0}.trace-title{list-style:none;cursor:pointer;min-height:26px}.trace-title::-webkit-details-marker{display:none}.trace-title:focus-visible{outline:2px solid #496c9a;outline-offset:4px;border-radius:4px}.trace-content time{white-space:nowrap}.trace-chevron{margin-left:auto;flex-shrink:0;transition:transform .15s}.trace-content[open] .trace-chevron{transform:rotate(90deg)}.trace-body{padding:5px 0 2px}.trace-diagnostics{grid-template-columns:auto minmax(0,1fr)}@media(max-width:650px){.payment-trace{padding:15px}.trace-heading{align-items:flex-start;flex-direction:column}}
 .trace-diagnostics{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:8px 0;font-size:11px;color:#65738b}.trace-diagnostics dd{margin:0;overflow-wrap:anywhere}
 </style>
