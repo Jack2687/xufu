@@ -120,3 +120,38 @@ func TestActionNetworkDiagnosticPrivacyAndPersistence(t *testing.T) {
 	}
 	r.finish(cslive.Result{Checkpoint: cp})
 }
+
+func TestMerchantPageDiagnosticPrivacyAndPersistence(t *testing.T) {
+	h, r, cp := nativeFixture(t, false)
+	fields := M{"page_event": "request_failed", "page_host": "cdn.oaistatic.com", "page_route": "other", "page_resource": "script", "page_network_error": "ERR_CONNECTION_RESET", "page_auth": "unknown", "url": "https://private.example/SECRET", "cookie": "SECRET"}
+	h.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "checking", At: time.Now(), Details: fields})
+	admin := expect(t, h.request("GET", "/api/admin/orders/"+r.id, nil, h.admin, nil), 200)
+	var found bool
+	for _, item := range admin["trace"].([]any) {
+		d := item.(M)["diagnostics"].(M)
+		if d["page_event"] == "request_failed" {
+			found = true
+			if d["page_host"] != "cdn.oaistatic.com" || d["page_network_error"] != "ERR_CONNECTION_RESET" || d["url"] != nil || d["cookie"] != nil {
+				t.Fatal("unsafe or missing merchant diagnostic", d)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("merchant diagnostic missing")
+	}
+	for _, path := range []string{"/api/orders/", "/api/v1/orders/"} {
+		response := h.request("GET", path+r.id, nil, h.member, nil)
+		expect(t, response, 200)
+		if strings.Contains(response.Body.String(), "page_host") || strings.Contains(response.Body.String(), "ERR_CONNECTION") {
+			t.Fatal("customer merchant diagnostic leak")
+		}
+	}
+	for _, key := range []string{"page_event", "page_host", "page_route", "page_resource", "page_auth", "page_network_error"} {
+		for _, invalid := range []any{"PRIVATE_SECRET", "", "other other", "other\n", true, []any{"other"}} {
+			if len(safeDiagnosticDetails(M{key: invalid})) != 0 {
+				t.Fatal("arbitrary merchant diagnostic accepted", key)
+			}
+		}
+	}
+	r.finish(cslive.Result{Checkpoint: cp})
+}

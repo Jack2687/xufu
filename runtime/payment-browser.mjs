@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import {isIP} from 'node:net'
 import {customIdentity,loginCookies,CustomPayment} from './payment-custom.mjs'
 import {HostedApproval} from './payment-hosted-approval.mjs'
+import {observeMerchantPage} from './payment-page-diagnostics.mjs'
 
 const currencies = new Set(['php','usd','jpy','sgd','gbp','egp','try'])
 export function checkoutIdentity(raw) {
@@ -71,9 +72,9 @@ export async function run(input, commands, emit, dependencies={}) {
   let finished=false,observations=Promise.resolve()
   const send=emit
   emit=e=>{if(!finished)send(e)}
-  let browser, sent=false, permit=false, latest=null, changedAt=0, quote=null, blocked='', responseCount=0, declined=false, networkFailed=false
+  let browser, hosted, pageDiagnostics, sent=false, permit=false, latest=null, changedAt=0, quote=null, blocked='', responseCount=0, declined=false, networkFailed=false
   const stage = code=>emit({type:'stage',code})
-  const done = (state,code='')=>{emit({type:'result',state,code,sent,amount:latest?.amount||0,currency:latest?.currency||'',evidence:latest?.evidence});finished=true}
+  const done = (state,code='')=>{pageDiagnostics?.finish(hosted?.started===true);emit({type:'result',state,code,sent,amount:latest?.amount||0,currency:latest?.currency||'',evidence:latest?.evidence});finished=true}
   let quoteTimer
   const abort=()=>{browser?.close().catch(()=>{})}
   dependencies.signal?.addEventListener('abort',abort,{once:true})
@@ -81,7 +82,7 @@ export async function run(input, commands, emit, dependencies={}) {
     if(dependencies.signal?.aborted)throw Error('cancelled')
     const id=checkoutIdentity(input.url)
     const identity=customIdentity(input.url),custom=identity?new CustomPayment(identity):null
-    const hosted=custom?null:new HostedApproval(id,input.resume_approval===true)
+    hosted=custom?null:new HostedApproval(id,input.resume_approval===true)
     if(input.resume_approval){sent=true;quote=input.saved_quote}
     const proxy=paymentProxy(input)
     const {chromium}=dependencies.playwright || await import('playwright')
@@ -89,6 +90,7 @@ export async function run(input, commands, emit, dependencies={}) {
     browser=await chromium.launch({headless:true,executablePath:chrome,proxy,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp','--disable-background-networking','--disable-breakpad']})
     if(dependencies.signal?.aborted)throw Error('cancelled')
     const ctx=await browser.newContext({locale:'en-US',timezoneId:'America/New_York',serviceWorkers:'block',acceptDownloads:false,proxy})
+    if(hosted)pageDiagnostics=observeMerchantPage(ctx,()=>hosted.navigated,emit)
     const hasLogin=!!input.session_cookies
     if(custom||hasLogin)await ctx.addCookies(loginCookies(input.session_cookies))
     input.session_cookies=''
@@ -130,7 +132,7 @@ export async function run(input, commands, emit, dependencies={}) {
     await ctx.route('**/*',async route=>{
       const req=route.request(), u=new URL(req.url())
       if(Date.now()>=input.proxy_expires_at){blocked='proxy_session_expired';return route.abort()}
-      if(u.protocol!=='https:' || !allowedHost(u.hostname) || u.username || u.password || (u.port&&u.port!=='443')) return route.abort()
+      if(u.protocol!=='https:' || !allowedHost(u.hostname) || u.username || u.password || (u.port&&u.port!=='443')) {pageDiagnostics?.blocked(req);return route.abort()}
       if(hosted&&u.hostname==='chatgpt.com'&&u.pathname.startsWith('/backend-api/payments/')&&!['GET','HEAD','OPTIONS'].includes(req.method())) {
         await observations
         if(!hasLogin||!hosted.matches(req)||!hosted.ready(latest,quote)||!(sent&&permit)){blocked='duplicate_blocked';return route.abort()}

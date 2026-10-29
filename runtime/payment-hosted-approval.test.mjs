@@ -11,7 +11,7 @@ test('hosted approval accepts only a returned official callback for this checkou
  for(const url of [landing.replace('chatgpt.com','evil.example'),landing.replace(id,'cs_test_Other'),landing+'&stripe_session_id='+id,landing.replace('https:','http:'),'https://chatgpt.com/api/anything?stripe_session_id='+id])assert.equal(hostedLanding({success_url:url},id),null)
 })
 
-for(const mode of ['success','separate_verify','resume','readonly','duplicate','wrong_order','ip_changed','missing_login'])test('hosted merchant approval: '+mode,{timeout:25000},async()=>{
+for(const mode of ['success','separate_verify','resume','readonly','duplicate','wrong_order','ip_changed','missing_login','return_denied','missing_auth','resource_failed','resource_blocked','script_error'])test('hosted merchant approval: '+mode,{timeout:25000},async()=>{
  let confirm=0,approve=0,approvalRequests=0,landings=0,probes=0
  const events=[],buffer=[],pending=[]
  const commands={next:()=>buffer.length?Promise.resolve(buffer.shift()):new Promise(r=>pending.push(r))}
@@ -30,7 +30,13 @@ for(const mode of ['success','separate_verify','resume','readonly','duplicate','
    const json=v=>route.fulfill({status:200,headers,contentType:'application/json',body:JSON.stringify(v)})
    if(req.method()==='OPTIONS')return json({})
    if(u.hostname==='pay.openai.com'){assert.equal((req.headers().cookie||'').includes('PRIVATE_COOKIE'),false);return route.fulfill({status:200,contentType:'text/html',body:form})}
-   if(req.url()===landing){landings++;assert.match(req.headers().cookie||'',/PRIVATE_COOKIE/);return route.fulfill({status:200,contentType:'text/html',body:verify})}
+   if(req.url()===landing){
+     landings++;assert.match(req.headers().cookie||'',/PRIVATE_COOKIE/)
+     const pages={return_denied:'Access denied',missing_auth:"<script>fetch('/api/auth/session')</script>",resource_failed:'<script src="https://cdn.oaistatic.com/assets/PRIVATE.js?token=PRIVATE_SECRET"></script>',resource_blocked:'<script src="https://sentinel.openai.com/PRIVATE?token=PRIVATE_SECRET"></script>',script_error:'<script>throw Error("PRIVATE_SECRET")</script>'}
+     return route.fulfill({status:mode==='return_denied'?403:200,contentType:'text/html',body:pages[mode]||verify})
+   }
+   if(u.pathname==='/api/auth/session')return json({user:null,private:'PRIVATE_SECRET'})
+   if(u.hostname==='cdn.oaistatic.com')return route.abort('connectionreset')
    if(u.pathname==='/backend-api/payments/checkout/approve'){approve++;return json({result:'approved'})}
    if(u.hostname==='api.stripe.com')assert.equal((req.headers().cookie||'').includes('PRIVATE_COOKIE'),false)
    if(u.pathname.endsWith('/confirm')){confirm++;return json(body())}
@@ -47,5 +53,16 @@ for(const mode of ['success','separate_verify','resume','readonly','duplicate','
  assert.equal(approve,success?1:0)
  assert.equal(approvalRequests,success?1:0)
  if(['readonly','missing_login','ip_changed'].includes(mode))assert.equal(landings,0)
+ const pageEvents=events.filter(e=>e.diagnostics?.page_event)
+ if(success)assert.ok(pageEvents.some(e=>e.diagnostics.page_event==='approval_observed'))
+ if(['return_denied','missing_auth','resource_failed','resource_blocked','script_error'].includes(mode)) {
+   assert.equal(pageEvents.at(-1).diagnostics.page_event,'approval_not_requested')
+   assert.equal(confirm,1);assert.equal(approve,0)
+ }
+ if(mode==='return_denied')assert.ok(pageEvents.some(e=>e.http_status===403&&e.diagnostics.page_route==='merchant_return'))
+ if(mode==='missing_auth')assert.ok(pageEvents.some(e=>e.diagnostics.page_auth==='missing'))
+ if(mode==='resource_failed')assert.ok(pageEvents.some(e=>e.diagnostics.page_network_error==='ERR_CONNECTION_RESET'))
+ if(mode==='resource_blocked')assert.ok(pageEvents.some(e=>e.diagnostics.page_event==='request_blocked'&&e.diagnostics.page_host==='sentinel.openai.com'))
+ if(mode==='script_error')assert.ok(pageEvents.some(e=>e.diagnostics.page_event==='script_error'))
  assert.equal(JSON.stringify(events).includes('PRIVATE_'),false)
 })

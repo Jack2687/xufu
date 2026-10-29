@@ -19,6 +19,14 @@ var safeProviderCodes = map[string]bool{
 	"payment_intent_unexpected_state": true, "billing_automatic_tax_unrecognized_customer_location": true, "rate_limit_exceeded": true, "processing_error": true,
 }
 
+var merchantDiagnosticEnums = map[string]string{
+	"page_event":    "navigated dom_ready script_error response resource_loaded request_failed request_blocked auth_observed approval_observed approval_not_requested",
+	"page_host":     "chatgpt.com cdn.oaistatic.com tcr9i.chat.openai.com auth.openai.com auth0.openai.com sentinel.openai.com challenges.cloudflare.com other",
+	"page_route":    "merchant_return auth_session login checkout other",
+	"page_resource": "document script stylesheet xhr fetch image font other",
+	"page_auth":     "present missing unknown",
+}
+
 func networkReason(err error) string {
 	if err == nil {
 		return ""
@@ -73,6 +81,14 @@ func safeDiagnosticDetails(input M) M {
 	out := M{}
 	for k, v := range input {
 		switch k {
+		case "page_event", "page_host", "page_route", "page_resource", "page_auth":
+			if s, ok := v.(string); ok && s != "" && !strings.ContainsAny(s, " \t\r\n") && strings.Contains(" "+merchantDiagnosticEnums[k]+" ", " "+s+" ") {
+				out[k] = s
+			}
+		case "page_network_error":
+			if s := safeActionDiagnostic("sdk_network_error", v); s != "" {
+				out[k] = s
+			}
 		case "sdk_stage", "sdk_resource", "sdk_event", "sdk_issue", "sdk_host", "sdk_route", "sdk_method", "sdk_request_type", "sdk_network_error":
 			if s := safeActionDiagnostic(k, v); s != "" {
 				out[k] = s
