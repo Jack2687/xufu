@@ -210,37 +210,9 @@ func TestActionDiagnosticsRetainSafeChallengeType(t *testing.T) {
 }
 
 func TestReleaseGuardPreservesPausedProtocolOrders(t *testing.T) {
-	psql, err := exec.LookPath("psql")
-	if err != nil {
-		psql = `C:\Program Files\PostgreSQL\18\bin\psql.exe`
-		if _, err = os.Stat(psql); err != nil {
-			t.Skip("psql required for release guard integration")
-		}
-	}
+	var err error
 	h, r, cp := nativeFixture(t, false)
-	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "active-work.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := func() int {
-		t.Helper()
-		u, _ := url.Parse(os.Getenv("TEST_DATABASE_URL"))
-		q := u.Query()
-		q.Del("search_path")
-		u.RawQuery = q.Encode()
-		cmd := exec.Command(psql, "-X", "-At", "-d", u.String())
-		cmd.Env = append(os.Environ(), "PGOPTIONS=-c search_path="+h.a.DB.Config().ConnConfig.RuntimeParams["search_path"])
-		cmd.Stdin = strings.NewReader(string(script))
-		out, e := cmd.CombinedOutput()
-		if e != nil {
-			t.Fatalf("guard: %v %s", e, out)
-		}
-		n, e := strconv.Atoi(strings.TrimSpace(string(out)))
-		if e != nil {
-			t.Fatal(e)
-		}
-		return n
-	}
+	active := releaseActiveCounter(t, h)
 	if active() == 0 {
 		t.Fatal("running payment did not block release")
 	}
@@ -273,5 +245,95 @@ func TestReleaseGuardPreservesPausedProtocolOrders(t *testing.T) {
 	h.a.DB.Exec(r.ctx, "UPDATE subscription_protocol SET lease_token=NULL,lease_until=NULL,checkpoint_enc='' WHERE order_id=$1", r.id)
 	if active() == 0 {
 		t.Fatal("incomplete paused checkpoint allowed release")
+	}
+}
+
+func releaseActiveCounter(t *testing.T, h *harness) func() int {
+	psql, err := exec.LookPath("psql")
+	if err != nil {
+		psql = `C:\Program Files\PostgreSQL\18\bin\psql.exe`
+		if _, err = os.Stat(psql); err != nil {
+			t.Skip("psql required for release guard integration")
+		}
+	}
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "active-work.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return func() int {
+		t.Helper()
+		u, _ := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+		q := u.Query()
+		q.Del("search_path")
+		u.RawQuery = q.Encode()
+		cmd := exec.Command(psql, "-X", "-At", "-d", u.String())
+		cmd.Env = append(os.Environ(), "PGOPTIONS=-c search_path="+h.a.DB.Config().ConnConfig.RuntimeParams["search_path"])
+		cmd.Stdin = strings.NewReader(string(script))
+		out, e := cmd.CombinedOutput()
+		if e != nil {
+			t.Fatalf("guard: %v %s", e, out)
+		}
+		n, e := strconv.Atoi(strings.TrimSpace(string(out)))
+		if e != nil {
+			t.Fatal(e)
+		}
+		return n
+	}
+}
+
+func TestReleaseGuardPreservesPausedLegacyOrders(t *testing.T) {
+	h, id, payment := subscriptionFixture(t, false)
+	ctx := context.Background()
+	active := releaseActiveCounter(t, h)
+	completeSubscriptionCheckout(t, h, id)
+	payment.events <- paymentEvent{Type: "quote", Amount: 1500, Currency: "php"}
+	waitPayment(t, h, id, "submitting")
+	if active() == 0 {
+		t.Fatal("running legacy payment did not block release")
+	}
+	payment.events <- paymentEvent{Type: "result", State: "unknown", Code: "result_unconfirmed", Sent: true}
+	waitPayment(t, h, id, "review")
+	if active() == 0 {
+		t.Fatal("runtime deadline has not passed")
+	}
+	if _, err := h.a.DB.Exec(ctx, "UPDATE payment_runs SET expires_at=now()-interval '1 second' WHERE order_id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+	if active() != 0 {
+		t.Fatal("durable paused legacy order incorrectly blocked release")
+	}
+	var before, after string
+	snapshot := `SELECT jsonb_build_array(to_jsonb(p),to_jsonb(u),to_jsonb(o))::text FROM payment_runs p JOIN subscription_runs u ON u.order_id=p.order_id JOIN orders o ON o.id=p.order_id WHERE p.order_id=$1`
+	if err := h.a.DB.QueryRow(ctx, snapshot, id).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.a.RecoverPayments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.a.DB.QueryRow(ctx, snapshot, id).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("restart altered paused payment or authorization")
+	}
+	paymentBalances(t, h, 90000, 10000)
+	for _, tc := range []struct{ change, restore string }{
+		{"UPDATE payment_runs SET state='checking' WHERE order_id=$1", "UPDATE payment_runs SET state='review' WHERE order_id=$1"},
+		{"UPDATE jobs SET state='running',lease_token='worker',lease_until=now()+interval '1 minute' WHERE order_id=$1", "UPDATE jobs SET state='completed',lease_token=NULL,lease_until=NULL WHERE order_id=$1"},
+		{"UPDATE subscription_runs SET lease_token='worker',lease_until=now()+interval '1 minute' WHERE order_id=$1", "UPDATE subscription_runs SET lease_token=NULL,lease_until=NULL WHERE order_id=$1"},
+		{"UPDATE payment_runs SET hosted_url_enc='' WHERE order_id=$1", "UPDATE payment_runs SET hosted_url_enc=(SELECT hosted_url_enc FROM checkout_runs WHERE order_id=$1) WHERE order_id=$1"},
+	} {
+		if _, err := h.a.DB.Exec(ctx, tc.change, id); err != nil {
+			t.Fatal(err)
+		}
+		if active() == 0 {
+			t.Fatal("active or incomplete legacy review allowed release")
+		}
+		if _, err := h.a.DB.Exec(ctx, tc.restore, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if active() != 0 {
+		t.Fatal("restored paused order did not become idle")
 	}
 }
