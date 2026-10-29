@@ -89,14 +89,36 @@ export async function run(input, commands, emit, dependencies={}) {
     if(custom)await ctx.addCookies(loginCookies(input.session_cookies))
     input.session_cookies=''
     const checkExit=async()=>{
-      if(Date.now()>=input.proxy_expires_at)throw Error('proxy_session_expired')
-      let ip
-      try {
-        if(dependencies.exitIP)ip=await dependencies.exitIP()
-        else {const response=await ctx.request.get('https://ipinfo.io/json',{timeout:10000,maxRedirects:0});if(response.status()!==200)throw Error();ip=(await response.json()).ip;await response.dispose()}
-      }catch{throw Error('proxy_session_unavailable')}
-      if(!isIP(ip||''))throw Error('proxy_session_unavailable')
-      if(ip!==input.expected_ip)throw Error('proxy_session_changed')
+      // Only retry a read-only probe through this unchanged proxy context. A
+      // different valid IP is terminal; never replace the expected address.
+      for(let attempt=1;attempt<=3;attempt++) {
+        if(Date.now()>=input.proxy_expires_at)throw Error('proxy_session_expired')
+        if(dependencies.signal?.aborted)throw Error('proxy_session_unavailable')
+        let ip,status=0,retryable=true,reason='connection'
+        const started=Date.now()
+        try {
+          if(dependencies.exitIP)ip=await dependencies.exitIP()
+          else {
+            const response=await ctx.request.get('https://ipinfo.io/json',{timeout:Math.min(10000,input.proxy_expires_at-Date.now()),maxRedirects:0})
+            try {
+              status=response.status()
+              retryable=status===429||status>=500
+              if(status===200){retryable=false;ip=(await response.json()).ip}
+            }finally{await response.dispose()}
+          }
+        }catch(e){
+          const message=String(e?.message||'').toLowerCase()
+          reason=/timeout|timed out/.test(message)?'timeout':/proxy|tunnel/.test(message)?'proxy_connect':/tls|ssl|certificate/.test(message)?'tls':'connection'
+        }
+        if(Date.now()>=input.proxy_expires_at)throw Error('proxy_session_expired')
+        if(isIP(ip||'')) {
+          if(ip!==input.expected_ip)throw Error('proxy_session_changed')
+          return
+        }
+        emit({type:'diagnostic',phase:'network',http_status:status,code:'proxy_session_unavailable',elapsed_ms:Date.now()-started,diagnostics:{request_attempt:attempt,...(status?{}:{network_reason:reason})}})
+        if(!retryable||attempt===3||dependencies.signal?.aborted)throw Error('proxy_session_unavailable')
+        await pause(750)
+      }
     }
     stage('network_check')
     await checkExit()

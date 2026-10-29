@@ -45,7 +45,7 @@ test('hosted init, tax update and paid confirm use checkout session_id, never pa
 
 // Real Chromium and real DOM interactions; all provider traffic fulfilled locally.
 // No card, payment or verification request ever reaches an external service.
-for(const mode of ['success','cancel','price_changed','unknown','action','declined','check_paid','check_unpaid','ip_changed','session_expired'])test('browser flow: '+mode,{timeout:20000},async()=>{
+for(const mode of ['success','cancel','price_changed','unknown','action','declined','check_paid','check_unpaid','ip_changed','session_expired','probe_retry','probe_failed','retry_ip_changed','probe_expired'])test('browser flow: '+mode,{timeout:20000},async()=>{
  let probes=0,confirmations=0,external=0,current=body({tax:false}),resolveCommand
  const events=[],commands={next:()=>new Promise(resolve=>{resolveCommand=resolve})}
  let pageRef
@@ -59,7 +59,12 @@ for(const mode of ['success','cancel','price_changed','unknown','action','declin
  document.querySelector('#billingPostalCode').addEventListener('blur',()=>fetch(base,{method:'POST'}));
  document.querySelector('button').onclick=()=>fetch(base+'/confirm',{method:'POST',body:new URLSearchParams({expected_amount:'1500'})});
  </script></body></html>`
- const deps={exitIP:async()=>{probes++;return mode==='ip_changed'&&probes>1?'203.0.113.3':'203.0.113.2'},playwright:{chromium:{launch:async options=>{
+ const deps={exitIP:async()=>{
+   probes++
+   if(mode==='probe_expired'&&probes===2){input.proxy_expires_at=Date.now()-1;throw Error('PRIVATE_PROXY timeout')}
+   if((['probe_retry','retry_ip_changed'].includes(mode)&&probes===2)||(mode==='probe_failed'&&probes>1))throw Error('PRIVATE_PROXY tunnel failed')
+   return mode==='ip_changed'&&probes>1||mode==='retry_ip_changed'&&probes>2?'203.0.113.3':'203.0.113.2'
+ },playwright:{chromium:{launch:async options=>{
    assert.equal(options.proxy.server,'http://127.0.0.1:18799');assert.equal(options.proxy.username,'order')
    const b=await chromium.launch({headless:true,executablePath:options.executablePath})
    const original=b.newContext.bind(b);b.newContext=async options=>{assert.equal(options.proxy.server,'http://127.0.0.1:18799');const ctx=await original({...options,proxy:undefined});ctx.on('page',p=>pageRef=p);return ctx};return b
@@ -68,7 +73,7 @@ for(const mode of ['success','cancel','price_changed','unknown','action','declin
    if(u.hostname==='pay.openai.com')return route.fulfill({status:200,contentType:'text/html',body:form})
    if(u.hostname!=='api.stripe.com'){external++;return route.abort()}
    if(u.pathname.endsWith('/init'))current=body({tax:false,paid:mode==='check_paid'})
-   else if(u.pathname.endsWith('/confirm')){confirmations++;if(mode==='declined')return route.fulfill({status:402,headers,contentType:'application/json',body:JSON.stringify({error:{type:'card_error',code:'card_declined'}})});if(mode==='unknown')return route.abort();current=body({paid:mode==='success',action:mode==='action'})}
+   else if(u.pathname.endsWith('/confirm')){confirmations++;if(mode==='declined')return route.fulfill({status:402,headers,contentType:'application/json',body:JSON.stringify({error:{type:'card_error',code:'card_declined'}})});if(mode==='unknown')return route.abort();current=body({paid:['success','probe_retry'].includes(mode),action:mode==='action'})}
    else current=body({amount:mode==='price_changed'&&events.some(e=>e.type==='quote')?1600:1500})
    return route.fulfill({status:200,headers,contentType:'application/json',body:JSON.stringify(current)})
  }}
@@ -83,13 +88,18 @@ for(const mode of ['success','cancel','price_changed','unknown','action','declin
  },deps)
  const final=events.at(-1)
  assert.equal(final.type,'result')
- const expected={success:'succeeded',cancel:'cancelled',price_changed:'failed',unknown:'review',action:'action_required',declined:'declined',check_paid:'succeeded',check_unpaid:'review',ip_changed:'failed',session_expired:'failed'}
+ const expected={success:'succeeded',cancel:'cancelled',price_changed:'failed',unknown:'review',action:'action_required',declined:'declined',check_paid:'succeeded',check_unpaid:'review',ip_changed:'failed',session_expired:'failed',probe_retry:'succeeded',probe_failed:'failed',retry_ip_changed:'failed',probe_expired:'failed'}
  assert.equal(final.state,expected[mode],JSON.stringify(events))
- assert.equal(confirmations,['success','unknown','action','declined'].includes(mode)?1:0)
+ assert.equal(confirmations,['success','probe_retry','unknown','action','declined'].includes(mode)?1:0)
  assert.equal(external,0)
  assert.equal(JSON.stringify(events).includes('4242424242424242'),false)
  assert.equal(input.card.number,undefined)
  assert.equal(JSON.stringify(events).includes('TEST_PRIVATE_PROXY'),false)
+ if(mode==='probe_retry'){assert.equal(probes,3);assert.equal(events.filter(e=>e.type==='submitted').length,1)}
+ if(mode==='probe_failed'){assert.equal(probes,4);assert.equal(final.code,'proxy_session_unavailable')}
+ if(mode==='retry_ip_changed'){assert.equal(probes,3);assert.equal(final.code,'proxy_session_changed')}
+ if(mode==='probe_expired'){assert.equal(probes,2);assert.equal(final.code,'proxy_session_expired')}
+ assert.equal(JSON.stringify(events).includes('PRIVATE_PROXY tunnel'),false)
  if(mode==='ip_changed')assert.equal(final.code,'proxy_session_changed')
  if(mode==='session_expired')assert.equal(final.code,'proxy_session_expired')
 })
