@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http/httptrace"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -77,10 +78,47 @@ func requestTimings(ctx context.Context) (context.Context, func() M) {
 		return out
 	}
 }
+func providerRequestKind(method, target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "https" {
+		return "other"
+	}
+	if method == "GET" && u.Hostname() == "ipinfo.io" && u.Path == "/json" {
+		return "exit_probe"
+	}
+	if u.Hostname() == "chatgpt.com" {
+		switch {
+		case method == "POST" && u.Path == "/backend-api/payments/checkout":
+			return "checkout_create"
+		case method == "GET" && u.Path == "/api/auth/session":
+			return "session_read"
+		case method == "GET" && strings.HasPrefix(u.Path, "/backend-api/accounts/check/"):
+			return "account_read"
+		case method == "GET" && u.Path == "/backend-api/subscriptions":
+			return "subscription_read"
+		}
+	}
+	if method == "POST" && u.Hostname() == "api.stripe.com" && checkoutInitPath.MatchString(u.Path) {
+		return "checkout_initialize"
+	}
+	return "other"
+}
+
 func safeDiagnosticDetails(input M) M {
 	out := M{}
 	for k, v := range input {
 		switch k {
+		case "edge_request_id":
+			if s, ok := v.(string); ok && safeEdgeRequestID.MatchString(s) {
+				out[k] = s
+			}
+		case "request_kind":
+			if s, ok := v.(string); ok {
+				switch s {
+				case "exit_probe", "checkout_create", "checkout_initialize", "session_read", "account_read", "subscription_read", "other":
+					out[k] = s
+				}
+			}
 		case "page_event", "page_host", "page_route", "page_resource", "page_auth":
 			if s, ok := v.(string); ok && s != "" && !strings.ContainsAny(s, " \t\r\n") && strings.Contains(" "+merchantDiagnosticEnums[k]+" ", " "+s+" ") {
 				out[k] = s
@@ -121,7 +159,7 @@ func safeDiagnosticDetails(input M) M {
 			if s, ok := v.(string); ok && (s == "charged" || s == "not_charged" || s == "action_required" || s == "authorized" || s == "pending" || s == "unknown") {
 				out[k] = s
 			}
-		case "sdk_has_stripe_js", "sdk_has_3ds_source", "sdk_waiting":
+		case "sdk_has_stripe_js", "sdk_has_3ds_source", "sdk_waiting", "challenge_required":
 			if b, ok := v.(bool); ok {
 				out[k] = b
 			}

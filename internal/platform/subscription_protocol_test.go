@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -266,27 +265,20 @@ func TestNativeDiagnosticsAndCustomerBoundary(t *testing.T) {
 	r.finish(cslive.Result{Checkpoint: cp})
 }
 
-func TestNativeFixedIPAndLease(t *testing.T) {
+func TestNativeBoundProxyAndLease(t *testing.T) {
 	h, r, cp := nativeFixture(t, false)
-	ip := "203.0.113.1"
-	country := "PH"
-	calls := 0
-	probe := &http.Client{Transport: testRoundTrip(func(req *http.Request) (*http.Response, error) {
-		calls++
-		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
-			t.Fatal("probe received credentials")
+	var before string
+	h.a.DB.QueryRow(r.ctx, "SELECT endpoint_enc FROM order_proxy_sessions WHERE order_id=$1", r.id).Scan(&before)
+	for _, recorded := range []string{"", "203.0.113.1", "203.0.113.2"} {
+		h.a.DB.Exec(r.ctx, "UPDATE order_proxy_sessions SET expected_ip=$2 WHERE order_id=$1", r.id, recorded)
+		if err := r.guardProxy(r.ctx); err != nil {
+			t.Fatal("exit metadata affected bound proxy", err)
 		}
-		return providerResponse(200, M{"ip": ip, "country": country}), nil
-	})}
-	if err := r.guardIP(r.ctx, probe); err != nil {
-		t.Fatal(err)
 	}
-	if err := r.guardIP(r.ctx, probe); err != nil {
-		t.Fatal(err)
-	}
-	ip = "203.0.113.2"
-	if cslive.ErrorCode(r.guardIP(r.ctx, probe)) != "proxy_session_changed" {
-		t.Fatal("IP drift accepted")
+	var after string
+	h.a.DB.QueryRow(r.ctx, "SELECT endpoint_enc FROM order_proxy_sessions WHERE order_id=$1", r.id).Scan(&after)
+	if before == "" || before != after {
+		t.Fatal("proxy binding changed")
 	}
 	tx, err := h.a.DB.Begin(r.ctx)
 	if err != nil {
@@ -298,11 +290,14 @@ func TestNativeFixedIPAndLease(t *testing.T) {
 		t.Fatal("native IP was replaced")
 	}
 	h.a.DB.Exec(r.ctx, "UPDATE order_proxy_sessions SET expires_at=now()-interval '1 second' WHERE order_id=$1", r.id)
-	if cslive.ErrorCode(r.guardIP(r.ctx, probe)) != "proxy_session_expired" || calls != 3 {
+	if cslive.ErrorCode(r.guardProxy(r.ctx)) != "proxy_session_expired" {
 		t.Fatal("expired session sent request")
 	}
 	stale := *r
 	stale.lease = "STALE_LEASE"
+	if cslive.ErrorCode(stale.guardProxy(r.ctx)) != "proxy_session_unavailable" {
+		t.Fatal("stale lease passed proxy guard")
+	}
 	if !errors.Is(stale.save(cp), ErrLeaseLost) {
 		t.Fatal("stale lease saved credentials")
 	}

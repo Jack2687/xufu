@@ -33,10 +33,18 @@ func TestBrowserProxyBoundaries(t *testing.T) {
 	}
 	defer closeProxy()
 	u, _ := url.Parse(p.Server)
-	for _, tc := range []struct {
+	type proxyCase struct {
 		host, auth string
 		want       int
-	}{{"pay.openai.com:443", "", 407}, {"evil.example:443", p.Password, 403}, {"pay.openai.com:80", p.Password, 403}, {"challenges.cloudflare.com:443", "", 407}, {"challenges.cloudflare.com.evil.example:443", p.Password, 403}, {"other.cloudflare.com:443", p.Password, 403}, {"challenges.cloudflare.com:80", p.Password, 403}, {"pay.openai.com:443", p.Password, 200}, {"challenges.cloudflare.com:443", p.Password, 200}} {
+	}
+	cases := []proxyCase{{"pay.openai.com:443", "", 407}, {"evil.example:443", p.Password, 403}, {"pay.openai.com:80", p.Password, 403}, {"challenges.cloudflare.com:443", "", 407}, {"challenges.cloudflare.com.evil.example:443", p.Password, 403}, {"other.cloudflare.com:443", p.Password, 403}, {"challenges.cloudflare.com:80", p.Password, 403}}
+	for _, host := range []string{"stripe-camo.global.ssl.fastly.net", "d1wqzb5bdbcre6.cloudfront.net", "maps.googleapis.com", "applepay.cdn-apple.com"} {
+		for _, row := range []proxyCase{{host + ":443", "", 407}, {host + ":80", p.Password, 403}, {host + ".evil.example:443", p.Password, 403}, {"other." + host + ":443", p.Password, 403}, {host + ":443", p.Password, 200}} {
+			cases = append(cases, row)
+		}
+	}
+	cases = append(cases, proxyCase{"pay.openai.com:443", p.Password, 200}, proxyCase{"challenges.cloudflare.com:443", p.Password, 200})
+	for _, tc := range cases {
 		c, e := net.Dial("tcp", u.Host)
 		if e != nil {
 			t.Fatal(e)
@@ -65,7 +73,7 @@ func TestBrowserProxyBoundaries(t *testing.T) {
 		}
 		c.Close()
 	}
-	if calls.Load() != 2 {
+	if calls.Load() != 6 {
 		t.Fatal("blocked target reached supplier")
 	}
 }

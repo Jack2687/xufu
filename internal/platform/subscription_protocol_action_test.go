@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -48,26 +47,12 @@ func TestSubscriptionWorkerAutomaticallyContinuesOriginalPayment(t *testing.T) {
 			if _, err := h.a.DB.Exec(ctx, "UPDATE order_proxy_sessions SET expected_ip='203.0.113.2' WHERE order_id=$1", id); err != nil {
 				t.Fatal(err)
 			}
-			endpoint, _ := h.a.decrypt(originalProxy)
-			pays, actions, recovers, probes := 0, 0, 0, 0
+			pays, actions, recovers := 0, 0, 0
 			var run *protocolRun
-			h.a.actionProbeClient = func(selected string, _ time.Duration) (*http.Client, func(), error) {
-				if selected != endpoint {
-					t.Fatal("changed order proxy")
-				}
-				return &http.Client{Transport: testRoundTrip(func(req *http.Request) (*http.Response, error) {
-					probes++
-					ip := "203.0.113.2"
-					if mode == "ip_drift" && probes > 1 {
-						ip = "203.0.113.3"
-					}
-					return providerResponse(200, M{"ip": ip, "country": "PH"}), nil
-				})}, func() {}, nil
-			}
 			process := &fixtureAction{events: make(chan actionEvent, 4)}
 			h.a.actionStart = func(actionCtx context.Context, in actionInput) (actionProcess, error) {
 				actions++
-				if !in.Automatic || in.ClientSecret != cp.ClientSecret || in.ExpectedIP != "203.0.113.2" {
+				if !in.Automatic || in.ClientSecret != cp.ClientSecret {
 					t.Fatal("not automatic/original context")
 				}
 				deadline, _ := actionCtx.Deadline()
@@ -160,14 +145,14 @@ func TestSubscriptionWorkerAutomaticallyContinuesOriginalPayment(t *testing.T) {
 			if mode == "direct_success" || mode == "declined" {
 				wantActions, wantRecovers = 0, 0
 			}
-			if mode == "runtime_error" || mode == "timeout" || mode == "ip_drift" || mode == "closed" {
+			if mode == "runtime_error" || mode == "timeout" || mode == "closed" {
 				wantRecovers = 0
 			}
 			if actions != wantActions || recovers != wantRecovers {
 				t.Fatal("wrong continuation counts", actions, recovers)
 			}
 			want, balance, frozen := "action_required", int64(90000), int64(10000)
-			if mode == "success" || mode == "keep" || mode == "direct_success" {
+			if mode == "success" || mode == "keep" || mode == "direct_success" || mode == "ip_drift" {
 				want, frozen = "succeeded", 0
 			}
 			if mode == "declined" {
@@ -227,9 +212,6 @@ func TestProtocolRecoveryAutomaticallyContinuesPendingSDK(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.finish(cslive.Result{Checkpoint: cp})
-	h.a.actionProbeClient = func(string, time.Duration) (*http.Client, func(), error) {
-		return &http.Client{Transport: testRoundTrip(func(*http.Request) (*http.Response, error) { return providerResponse(200, M{"ip": "203.0.113.2"}), nil })}, func() {}, nil
-	}
 	finished := make(chan struct{})
 	actions, reads := 0, 0
 	h.a.actionStart = func(_ context.Context, in actionInput) (actionProcess, error) {

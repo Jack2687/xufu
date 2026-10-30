@@ -86,6 +86,63 @@ func TestProtocolMonitorDistinguishesNormalAbsentAndAutoHandoff(t *testing.T) {
 	r.finish(cslive.Result{Checkpoint: cp})
 }
 
+func TestHostedPendingDiagnosticsAndReadPhases(t *testing.T) {
+	h, r, cp := nativeFixture(t, false)
+	r.last.Phase = "hosted_confirm"
+	for _, path := range []string{"/v1/payment_pages/{id}", "/v1/payment_pages/{id}?key=PRIVATE_KEY"} {
+		r.event(map[string]any{"event": "http_request", "path": path, "status": 200})
+		d := <-h.a.providerDiagnostics
+		if d.Phase != "checking" {
+			t.Fatal("payment status read mislabeled as confirmation", d.Phase)
+		}
+	}
+	for path, want := range map[string]string{"/v1/payment_pages/{id}/init": "pricing", "/v1/payment_pages/{id}/confirm": "confirming", "/backend-api/payments/checkout/approve": "confirming"} {
+		if got := protocolDiagnosticPhase(path, "hosted_confirm"); got != want {
+			t.Fatal("write or initialization misclassified", path, got)
+		}
+	}
+	for _, d := range []providerDiagnostic{
+		{Code: "pending"},
+		{Code: "payment_pending"},
+		{Details: M{"payment_state": "pending", "raw_state": "active"}},
+	} {
+		d.Order, d.Phase, d.At = r.id, "checking", time.Now()
+		h.a.saveProviderDiagnostic(d)
+	}
+	rows := h.a.paymentTraceDetails(r.ctx, r.id)
+	found := 0
+	for _, row := range rows {
+		if row["phase"] == "checking" {
+			found++
+			if row["state"] != "review" {
+				t.Fatal("pending payment reported as complete or failed", row["state"], row["code"])
+			}
+		}
+	}
+	if found != 3 || len(safeDiagnosticDetails(M{"raw_state": "PRIVATE_SECRET"})) != 1 || safeDiagnosticDetails(M{"raw_state": "PRIVATE_SECRET"})["raw_state"] != "redacted" {
+		t.Fatal("missing diagnostics or lost privacy boundary")
+	}
+	var storedReviews int
+	if err := h.a.DB.QueryRow(r.ctx, "SELECT count(*) FROM payment_trace_events WHERE order_id=$1 AND phase='checking' AND state='review'", r.id).Scan(&storedReviews); err != nil || storedReviews != 3 {
+		t.Fatal("new pending observations stored with wrong state", err, storedReviews)
+	}
+	if _, err := h.a.DB.Exec(r.ctx, "UPDATE payment_trace_events SET state='failed' WHERE order_id=$1 AND code='pending'", r.id); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range h.a.paymentTraceDetails(r.ctx, r.id) {
+		if row["code"] == "pending" && row["state"] != "review" {
+			t.Fatal("historical pending observation still shown as failed")
+		}
+	}
+	h.a.saveProviderDiagnostic(providerDiagnostic{Order: r.id, Phase: "checking", Code: "access_denied", Status: 403, At: time.Now(), Details: M{"payment_state": "pending"}})
+	for _, row := range h.a.paymentTraceDetails(r.ctx, r.id) {
+		if row["code"] == "access_denied" && row["state"] != "failed" {
+			t.Fatal("pending metadata hid an HTTP failure")
+		}
+	}
+	r.finish(cslive.Result{Checkpoint: cp})
+}
+
 func TestActionNetworkDiagnosticPrivacyAndPersistence(t *testing.T) {
 	h, r, cp := nativeFixture(t, false)
 	fields := M{"sdk_event": "diagnostic", "sdk_issue": "resource_failed", "sdk_host": "api.stripe.com", "sdk_route": "payment_intent", "sdk_resource_key": "0123456789abcdef", "sdk_request": int64(7), "sdk_method": "GET", "sdk_request_type": "fetch", "sdk_network_error": "ERR_TUNNEL_CONNECTION_FAILED", "sdk_duration_ms": int64(15000), "sdk_guard_ms": int64(1234), "sdk_pending": int64(1), "url": "https://private.example/SECRET", "body": "SECRET"}

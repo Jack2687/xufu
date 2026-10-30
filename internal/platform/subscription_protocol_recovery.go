@@ -73,7 +73,7 @@ func (a *App) checkProtocolPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var bound bool
-	if tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM order_proxy_sessions WHERE order_id=$1 AND endpoint_enc<>'' AND expected_ip<>'' AND expires_at>now())", id).Scan(&bound) != nil || !bound {
+	if tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM order_proxy_sessions WHERE order_id=$1 AND endpoint_enc<>'' AND expires_at>now())", id).Scan(&bound) != nil || !bound {
 		fail(w, 409, "原订单代理会话已失效，已停止自动核实")
 		return
 	}

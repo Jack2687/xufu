@@ -52,7 +52,7 @@ type checkoutCurlOutput struct {
 
 func (b *checkoutCurlOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	remaining := (1 << 20) + 1024 - b.Len()
+	remaining := (1 << 20) + (16 << 10) - b.Len()
 	if n > remaining {
 		b.overflow = true
 		p = p[:max(remaining, 0)]
@@ -84,8 +84,9 @@ func (t checkoutCurlTransport) RoundTrip(r *http.Request) (*http.Response, error
 	option("proto", "=https")
 	option("max-time", strconv.FormatFloat(t.timeout.Seconds(), 'f', 0, 64))
 	option("connect-timeout", "10")
-	option("write-out", "\n__XUFU_CURL_STATUS__:%{http_code}\n%{content_type}")
-	config.WriteString("silent\nshow-error\n")
+	option("write-out", "\n__XUFU_CURL_STATUS__:%{http_code}")
+	option("dump-header", "-")
+	config.WriteString("silent\nshow-error\nsuppress-connect-headers\n")
 	for key, values := range r.Header {
 		for _, value := range values {
 			if strings.ContainsAny(key+value, "\r\n\x00") {
@@ -118,18 +119,5 @@ func (t checkoutCurlTransport) RoundTrip(r *http.Request) (*http.Response, error
 	if stdout.overflow {
 		return nil, errors.New("checkout response too large")
 	}
-	raw := stdout.String()
-	const separator = "\n__XUFU_CURL_STATUS__:"
-	index := strings.LastIndex(raw, separator)
-	if index < 0 {
-		return nil, errors.New("checkout response invalid")
-	}
-	body, marker := raw[:index], raw[index+len(separator):]
-	statusText, contentType, _ := strings.Cut(marker, "\n")
-	status, err := strconv.Atoi(strings.TrimSpace(statusText))
-	if err != nil || status < 100 || status > 599 {
-		return nil, errors.New("checkout response invalid")
-	}
-	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {strings.TrimSpace(contentType)}},
-		Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: r}, nil
+	return parseCheckoutCurlResponse(r, stdout.String())
 }

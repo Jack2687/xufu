@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {runAction,safeActionResult} from './payment-action.mjs'
 
-const input=()=>({proxy:{server:'http://127.0.0.1:9',username:'fixture',password:'fixture'},expected_ip:'203.0.113.8',expires_at:Math.floor(Date.now()/1000)+60,publishable_key:'pk_test_Fixture',client_secret:'pi_Fixture_secret_Test'})
+const input=()=>({proxy:{server:'http://127.0.0.1:9',username:'fixture',password:'fixture'},expires_at:Math.floor(Date.now()/1000)+60,publishable_key:'pk_test_Fixture',client_secret:'pi_Fixture_secret_Test'})
 for(const mode of ['automatic','interactive','wrong_intent','not_required','sdk_error']){
  test('official SDK original-transaction flow: '+mode,{timeout:20000},async()=>{
   const events=[],requests=[];let handler

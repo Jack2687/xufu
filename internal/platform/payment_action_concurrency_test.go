@@ -2,8 +2,6 @@ package platform
 
 import (
 	"context"
-	"net/http"
-	"sync/atomic"
 	"testing"
 	"time"
 	"xupay/internal/cslive"
@@ -26,9 +24,8 @@ func (p *burstAction) Send(c actionCommand) error {
 	return nil
 }
 
-// A real SDK loads many resources at once. Serial 150 ms checks take 3.6 s,
-// exhausting the 1.5 s fixture budget; an in-flight shared check completes all.
-func TestActionConcurrentResourcesDoNotQueueBehindIPProbes(t *testing.T) {
+// Concurrent SDK resources receive live lease checks without network probes.
+func TestActionConcurrentResourcesCheckLease(t *testing.T) {
 	h, r, cp := nativeFixture(t, false)
 	if ok, e := r.approve(1500, "PHP"); !ok || e != nil {
 		t.Fatal(e)
@@ -39,18 +36,6 @@ func TestActionConcurrentResourcesDoNotQueueBehindIPProbes(t *testing.T) {
 	}
 	if _, e := h.a.DB.Exec(r.ctx, "UPDATE order_proxy_sessions SET expected_ip='203.0.113.2' WHERE order_id=$1", r.id); e != nil {
 		t.Fatal(e)
-	}
-	var probes atomic.Int32
-	h.a.actionProbeClient = func(string, time.Duration) (*http.Client, func(), error) {
-		return &http.Client{Transport: testRoundTrip(func(req *http.Request) (*http.Response, error) {
-			probes.Add(1)
-			select {
-			case <-time.After(150 * time.Millisecond):
-			case <-req.Context().Done():
-				return nil, req.Context().Err()
-			}
-			return providerResponse(200, M{"ip": "203.0.113.2"}), nil
-		})}, func() {}, nil
 	}
 	p := &burstAction{events: make(chan actionEvent, 32)}
 	h.a.actionStart = func(context.Context, actionInput) (actionProcess, error) {
@@ -65,8 +50,8 @@ func TestActionConcurrentResourcesDoNotQueueBehindIPProbes(t *testing.T) {
 	if err := r.runPaymentAction(cp, &paymentAction{automatic: true}); err != nil {
 		t.Fatal(err)
 	}
-	if p.allowed != 24 || probes.Load() > 3 {
-		t.Fatalf("allowed=%d probes=%d", p.allowed, probes.Load())
+	if p.allowed != 24 {
+		t.Fatalf("allowed=%d", p.allowed)
 	}
 	r.finish(cslive.Result{Checkpoint: cp})
 }

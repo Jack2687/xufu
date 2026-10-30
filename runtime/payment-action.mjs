@@ -19,7 +19,7 @@ const codes=new Set(['','authentication_required','payment_intent_authentication
 export function safeActionResult(v={}){return {outcome:outcomes.has(v.outcome)?v.outcome:'page_error',code:codes.has(v.code)?v.code:'unknown'}}
 export async function runAction(input,emit,commands,fixture={}) {
   const proxy=new URL(input.proxy?.server||'')
-  if(proxy.protocol!=='http:'||proxy.hostname!=='127.0.0.1'||!proxy.port||!input.proxy.username||!input.proxy.password||!isIP(input.expected_ip||'')||!/^pk_[A-Za-z0-9_]+$/.test(input.publishable_key)||!/^pi_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/.test(input.client_secret))throw Error('invalid_context')
+  if(proxy.protocol!=='http:'||proxy.hostname!=='127.0.0.1'||!proxy.port||!input.proxy.username||!input.proxy.password||!/^pk_[A-Za-z0-9_]+$/.test(input.publishable_key)||!/^pi_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/.test(input.client_secret))throw Error('invalid_context')
   const expires=Math.min(Date.now()+600000,input.expires_at*1000)
   if(expires<=Date.now())throw Error('expired')
   const base='https://xupay-action.invalid/'+crypto.randomBytes(24).toString('hex')+'/'
@@ -47,7 +47,8 @@ export async function runAction(input,emit,commands,fixture={}) {
   })
   try {
     progress('browser_start')
-    browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||undefined,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],proxy:input.proxy})
+    const chrome=process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||process.env.PAYMENT_CHROME_PATH||(process.platform==='win32'&&fs.existsSync('C:/Program Files/Google/Chrome/Application/chrome.exe')?'C:/Program Files/Google/Chrome/Application/chrome.exe':undefined)
+    browser=await chromium.launch({headless:true,executablePath:chrome,args:['--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],proxy:input.proxy})
     if(closed)return
     timer=setTimeout(()=>{if(!finished){network?.pending();emit({type:'progress',stage,elapsed_ms:Date.now()-stageAt,waiting:true,details:network?.summary()});emit({type:'timeout'})}closed=true;resolveDone();void browser.close()},Math.max(1,expires-Date.now()))
     // Closing stdin or an operator close also interrupts navigation/SDK loading.

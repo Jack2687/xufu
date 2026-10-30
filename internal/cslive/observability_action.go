@@ -14,7 +14,7 @@ func observability_SafeActionType(value string) string {
 // SafePaymentStatus 不输出未知的自由文本，保留排查所需的有限状态枚举。
 func observability_SafePaymentStatus(value string) string {
 	switch value {
-	case "open", "complete", "expired", "paid", "unpaid", "no_payment_required", "succeeded", "processing", "pending", "requires_payment_method", "requires_confirmation", "requires_action", "requires_capture", "requires_approval", "canceled", "cancelled", "declined", "failed", "blocked":
+	case "active", "open", "complete", "expired", "paid", "unpaid", "no_payment_required", "succeeded", "processing", "pending", "requires_payment_method", "requires_confirmation", "requires_action", "requires_capture", "requires_approval", "canceled", "cancelled", "declined", "failed", "blocked":
 		return value
 	default:
 		return "redacted"

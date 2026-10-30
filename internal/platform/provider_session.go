@@ -190,11 +190,20 @@ func (s *providerSession) refresh() error {
 }
 
 func (s *providerSession) prepare() error {
-	// Activation first queries the supplied AT; only a rejected read refreshes it.
+	// Refresh paid-order authorization before the activation read, even when
+	// checkout recently refreshed it. refresh persists the rotated credentials
+	// before returning; a failed refresh must never fall back to the old AT.
 	if s.purpose == "activation" {
+		if s.in.SessionToken != "" || s.in.Cookies != "" {
+			return s.refresh()
+		}
+		// Historical AT-only orders retain their existing read-only compatibility.
+		if s.trace != nil {
+			s.trace("waiting", "session_refresh_unavailable")
+		}
 		return nil
 	}
-	// Checkout uses the supplied AT. Refresh belongs to the post-payment renewal
+	// Checkout uses the supplied AT. Refresh belongs to the post-payment
 	// stage; an expired checkout credential must not add a pre-payment refresh.
 	if s.purpose == "checkout" {
 		if !s.in.TokenExpiresAt.IsZero() && !s.in.TokenExpiresAt.After(time.Now()) {

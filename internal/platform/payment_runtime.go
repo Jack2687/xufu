@@ -20,23 +20,24 @@ type cardInput struct {
 	CVC    string `json:"cvc"`
 }
 type paymentInput struct {
-	ResumeApproval bool               `json:"resume_approval,omitempty"`
-	SavedQuote     M                  `json:"saved_quote,omitempty"`
-	SessionCookies string             `json:"session_cookies,omitempty"`
-	Proxy          *browserProxyInput `json:"proxy"`
-	ExpectedIP     string             `json:"expected_ip"`
-	ProxyExpiresAt int64              `json:"proxy_expires_at"`
-	Mode           string             `json:"mode"`
-	URL            string             `json:"url"`
-	Email          string             `json:"email"`
-	Card           cardInput          `json:"card"`
-	Billing        M                  `json:"billing"`
-	PrepareSeconds int                `json:"prepare_seconds"`
-	QuoteSeconds   int                `json:"quote_seconds"`
-	ResultSeconds  int                `json:"result_seconds"`
-	AutoConfirm    bool               `json:"-"`
-	MaxAmount      int64              `json:"-"`
-	Currency       string             `json:"-"`
+	ResumeApproval  bool               `json:"resume_approval,omitempty"`
+	SavedQuote      M                  `json:"saved_quote,omitempty"`
+	SessionCookies  string             `json:"session_cookies,omitempty"`
+	Proxy           *browserProxyInput `json:"proxy"`
+	ExpectedIP      string             `json:"expected_ip"`
+	SkipExitIPCheck bool               `json:"skip_exit_ip_check,omitempty"`
+	ProxyExpiresAt  int64              `json:"proxy_expires_at"`
+	Mode            string             `json:"mode"`
+	URL             string             `json:"url"`
+	Email           string             `json:"email"`
+	Card            cardInput          `json:"card"`
+	Billing         M                  `json:"billing"`
+	PrepareSeconds  int                `json:"prepare_seconds"`
+	QuoteSeconds    int                `json:"quote_seconds"`
+	ResultSeconds   int                `json:"result_seconds"`
+	AutoConfirm     bool               `json:"-"`
+	MaxAmount       int64              `json:"-"`
+	Currency        string             `json:"-"`
 }
 type paymentEvent struct {
 	ProtocolLease string           `json:"-"`

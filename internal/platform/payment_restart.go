@@ -6,7 +6,7 @@ import (
 )
 
 // Keep the historical hooks, but never rotate an order's original proxy.
-// Expiry or IP drift stops either flow, even before submission.
+// Expiry or a missing binding stops either flow, even before submission.
 func (a *App) restartCheckoutNetworkTx(context.Context, pgx.Tx, string, string) (bool, error) {
 	return false, nil
 }

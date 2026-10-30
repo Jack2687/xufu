@@ -385,9 +385,8 @@ func (a *App) runCheckoutFlow(ctx context.Context, j *Job, endpoint string, in c
 		return checkoutOutput{}, err
 	}
 	defer closeClient()
-	// Recheck the same bound exit before each legacy business request as well,
-	// including Stripe init. Keep the unwrapped client only for IP probes.
-	guard := &protocolCheckoutRun{a: a, job: j, country: in.Country, probe: client}
+	// Check the original proxy lease before each request without probing its exit.
+	guard := &protocolCheckoutRun{a: a, job: j, country: in.Country}
 	guarded := *client
 	guarded.Transport = &legacyCheckoutGuard{base: client.Transport, guard: guard}
 	// generator.py uses the supplied access token directly for both modes.

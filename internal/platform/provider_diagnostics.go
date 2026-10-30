@@ -18,6 +18,7 @@ type providerDiagnostic struct {
 type providerDiagnosticKey struct{}
 
 var safeRequestID = regexp.MustCompile(`^(?:req_[A-Za-z0-9]{8,80}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
+var safeEdgeRequestID = regexp.MustCompile(`^[0-9a-fA-F]{16,32}-[A-Z]{3}$`)
 
 func reportProvider(ctx context.Context, status int, requestID string, err error, elapsed time.Duration, details ...M) {
 	if sink, ok := ctx.Value(providerDiagnosticKey{}).(func(providerDiagnostic)); ok {
@@ -34,6 +35,9 @@ func reportProvider(ctx context.Context, status int, requestID string, err error
 func (a *App) providerContext(ctx context.Context, id, phase string) context.Context {
 	return context.WithValue(ctx, providerDiagnosticKey{}, func(d providerDiagnostic) {
 		d.Order, d.Phase = id, phase
+		if d.Details["request_kind"] == "exit_probe" {
+			d.Phase = "network"
+		}
 		a.enqueueDiagnostic(d)
 	})
 }
@@ -97,6 +101,9 @@ func (a *App) saveProviderDiagnostic(d providerDiagnostic) {
 		state = "failed"
 	}
 	if d.Code == "verification_required" || d.Details["payment_state"] == "action_required" || (d.Phase == "verification" && d.Details["sdk_outcome"] != nil && d.Details["sdk_outcome"] != "sdk_returned") {
+		state = "review"
+	}
+	if d.Status < http.StatusBadRequest && (d.Code == "pending" || d.Code == "payment_pending" || d.Details["payment_state"] == "pending") {
 		state = "review"
 	}
 	if d.Code == "verification_continuing" || (d.Phase == "verification" && d.Details["sdk_event"] == "progress") {

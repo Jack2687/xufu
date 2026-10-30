@@ -123,10 +123,19 @@ func TestRefreshBoundedRecoveryAndLegacyInput(t *testing.T) {
 		}
 	}
 	// A worker must not use rotated authorization until it has persisted it.
-	in, _ := refreshFixture(t)
-	s := &providerSession{ctx: context.Background(), in: &in, purpose: "renewal", persist: func(checkoutInput) error { return ErrLeaseLost }, client: &http.Client{Transport: testRoundTrip(func(*http.Request) (*http.Response, error) { return providerResponse(200, testSession(in.Email)), nil })}}
-	if !errors.Is(s.prepare(), ErrLeaseLost) {
-		t.Fatal("lost lease ignored")
+	for _, purpose := range []string{"renewal", "activation"} {
+		in, _ := refreshFixture(t)
+		requests := 0
+		s := &providerSession{ctx: context.Background(), in: &in, purpose: purpose, persist: func(checkoutInput) error { return ErrLeaseLost }, client: &http.Client{Transport: testRoundTrip(func(r *http.Request) (*http.Response, error) {
+			requests++
+			if r.URL.Path != "/api/auth/session" {
+				t.Fatal("read before refreshed credentials were saved")
+			}
+			return providerResponse(200, testSession(in.Email)), nil
+		})}}
+		if !errors.Is(s.prepare(), ErrLeaseLost) || requests != 1 {
+			t.Fatal("lost lease ignored", purpose, requests)
+		}
 	}
 }
 
@@ -252,7 +261,7 @@ func TestPaidActivationRetryRefreshAndKeep(t *testing.T) {
 			t.Fatal("activation failed", status, activation)
 		}
 	}
-	if refreshes != 0 || reads != 2 || writes != 0 {
+	if refreshes != 2 || reads != 2 || writes != 0 {
 		t.Fatal("wrong calls", refreshes, reads, writes)
 	}
 	paymentBalances(t, h, 90000, 0)

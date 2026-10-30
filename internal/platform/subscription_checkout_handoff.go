@@ -26,7 +26,7 @@ func (r *protocolRun) prepareLegacyCheckout(in checkoutInput) (*cslive.PreparedC
 	if in.CheckoutType == "oaics" {
 		in.Mode = "short"
 	}
-	in.ObserveIP = func(ip string) error { return r.a.recordOrderProxyIP(r.ctx, r.job, ip) }
+	in.ObserveIP = nil
 	started := time.Now()
 	r.a.paymentTrace(r.ctx, r.id, "checkout", "running", "", 0)
 	result, err := r.a.runCheckoutFlow(r.ctx, r.job, endpoint, in, subscriptionFlowLegacy, "subscription")

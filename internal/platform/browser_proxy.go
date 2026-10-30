@@ -35,7 +35,7 @@ func (d contextProxyDialer) DialContext(ctx context.Context, network, address st
 }
 
 func browserProxyHost(host string) bool {
-	for _, h := range []string{"pay.openai.com", "checkout.stripe.com", "chatgpt.com", "cdn.oaistatic.com", "tcr9i.chat.openai.com", "challenges.cloudflare.com", "api.stripe.com", "js.stripe.com", "stripe.com", "stripe.network", "b.stripecdn.com", "hcaptcha.com", "ipinfo.io"} {
+	for _, h := range []string{"pay.openai.com", "checkout.stripe.com", "chatgpt.com", "cdn.oaistatic.com", "tcr9i.chat.openai.com", "challenges.cloudflare.com", "api.stripe.com", "js.stripe.com", "stripe.com", "stripe.network", "b.stripecdn.com", "hcaptcha.com", "ipinfo.io", "stripe-camo.global.ssl.fastly.net", "d1wqzb5bdbcre6.cloudfront.net", "maps.googleapis.com", "applepay.cdn-apple.com"} {
 		if host == h {
 			return true
 		}

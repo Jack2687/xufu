@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 )
@@ -106,24 +105,24 @@ func TestPaidOrderRetainsProxyThroughRenewal(t *testing.T) {
 				t.Fatal("changed payment, billing or fee")
 			}
 			switch mode {
-			case "success", "activation_401", "retry":
+			case "success", "retry", "probe_network", "drift_before_read", "drift_before_refresh", "drift_before_cancel":
 				if renewal != "disabled" || activation != "active" || writes != 1 {
 					t.Fatal("incomplete renewal", renewal, activation, writes)
 				}
-				want := 1
-				if mode == "activation_401" {
-					want = 2
+				want := 2
+				if mode == "retry" {
+					want = 3
 				}
 				if refreshes != want {
 					t.Fatal("incorrect refresh order", refreshes)
 				}
 			case "keep":
-				if renewal != "kept" || activation != "active" || refreshes != 0 || writes != 0 {
+				if renewal != "kept" || activation != "active" || refreshes != 1 || writes != 0 {
 					t.Fatal("keep changed")
 				}
-			case "probe_network":
-				if writes != 0 || reads != 0 || renewal != "pending" {
-					t.Fatal("transient probe failure sent requests")
+			case "activation_401":
+				if activation != "review" || renewal != "review" || refreshes != 1 || reads != 1 || writes != 0 {
+					t.Fatal("rejected refreshed authorization continued", activation, renewal, refreshes, reads, writes)
 				}
 			default:
 				if writes != 0 || renewal != "review" {
@@ -149,8 +148,8 @@ func TestPaidOrderRetainsProxyThroughRenewal(t *testing.T) {
 			}
 			paymentBalances(t, h, 90000, 0)
 			assertSubscriptionPrivate(t, h, id)
-			if strings.HasPrefix(mode, "drift_") && refreshes+reads+writes >= probes {
-				t.Fatal("unverified operation passed")
+			if probes != 0 {
+				t.Fatal("subscription performed an exit-IP probe")
 			}
 		})
 	}

@@ -141,13 +141,13 @@ func (a *App) recordOrderProxyIP(ctx context.Context, j *Job, ip string) error {
 	if parsed == nil {
 		return checkoutFailure("proxy_unavailable", true, false)
 	}
-	tag, err := a.DB.Exec(ctx, `UPDATE order_proxy_sessions s SET expected_ip=$3 WHERE s.order_id=$1 AND s.expires_at>now() AND (s.expected_ip='' OR s.expected_ip=$3)
+	tag, err := a.DB.Exec(ctx, `UPDATE order_proxy_sessions s SET expected_ip=CASE WHEN s.expected_ip='' THEN $3 ELSE s.expected_ip END WHERE s.order_id=$1 AND s.expires_at>now()
  AND EXISTS(SELECT 1 FROM jobs j WHERE j.order_id=s.order_id AND j.lease_token=$2 AND j.state='running' AND j.lease_until>now())`, j.OrderID, j.Lease, parsed.String())
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
-		return checkoutFailure("proxy_session_changed", false, false)
+		return checkoutFailure("proxy_session_unavailable", false, false)
 	}
 	return nil
 }
@@ -159,11 +159,11 @@ func (a *App) paymentOrderProxy(ctx context.Context, id, attempt string, ttl int
 		return nil, "", time.Time{}, err
 	}
 	defer tx.Rollback(ctx)
-	var country, expected string
+	var country, expected, workflow string
 	var expires time.Time
-	err = tx.QueryRow(ctx, `SELECT o.country,s.expected_ip,s.expires_at FROM orders o JOIN order_proxy_sessions s ON s.order_id=o.id JOIN payment_runs p ON p.order_id=o.id
- WHERE o.id=$1 AND p.attempt_id=$2 AND p.state IN ('preparing','checking') AND p.expires_at>now()`, id, attempt).Scan(&country, &expected, &expires)
-	if err != nil || net.ParseIP(expected) == nil {
+	err = tx.QueryRow(ctx, `SELECT o.country,s.expected_ip,s.expires_at,o.workflow FROM orders o JOIN order_proxy_sessions s ON s.order_id=o.id JOIN payment_runs p ON p.order_id=o.id
+ WHERE o.id=$1 AND p.attempt_id=$2 AND p.state IN ('preparing','checking') AND p.expires_at>now()`, id, attempt).Scan(&country, &expected, &expires, &workflow)
+	if err != nil || (workflow != "subscription" && net.ParseIP(expected) == nil) {
 		return nil, "", time.Time{}, checkoutFailure("proxy_session_unavailable", false, false)
 	}
 	p, err := a.acquireOrderProxyTx(ctx, tx, id, country, time.Duration(ttl+15)*time.Second)

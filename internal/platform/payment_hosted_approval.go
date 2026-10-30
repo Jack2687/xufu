@@ -25,7 +25,7 @@ func (a *App) authorizeHostedApproval(ctx context.Context, id, attempt string, e
  JOIN order_proxy_sessions s ON s.order_id=p.order_id JOIN resources r ON r.id=s.resource_id
  WHERE p.order_id=$1 AND p.attempt_id=$2 AND p.submitted AND NOT p.approval_started
  AND p.state IN ('submitting','checking') AND p.expires_at>now() AND p.amount=$3 AND p.currency=$4
- AND o.status IN ('processing','review') AND s.expires_at>now() AND s.expected_ip<>'' AND r.enabled
+ AND o.status IN ('processing','review') AND s.expires_at>now() AND s.endpoint_enc<>'' AND (o.workflow='subscription' OR s.expected_ip<>'') AND r.enabled
  AND NOT EXISTS(SELECT 1 FROM subscription_protocol c WHERE c.order_id=p.order_id) FOR UPDATE OF p`, id, attempt, event.Amount, event.Currency).Scan(&rawEnc)
 	if err != nil {
 		return err

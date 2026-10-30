@@ -19,11 +19,11 @@ export function checkoutIdentity(raw) {
   return m[1]
 }
 export function allowedHost(host) {
-  return ['pay.openai.com','checkout.stripe.com','chatgpt.com','cdn.oaistatic.com','tcr9i.chat.openai.com','challenges.cloudflare.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
+  return ['pay.openai.com','checkout.stripe.com','chatgpt.com','cdn.oaistatic.com','tcr9i.chat.openai.com','challenges.cloudflare.com','api.stripe.com','js.stripe.com','stripe.com','stripe.network','b.stripecdn.com','hcaptcha.com','stripe-camo.global.ssl.fastly.net','d1wqzb5bdbcre6.cloudfront.net','maps.googleapis.com','applepay.cdn-apple.com'].some(h=>host===h||(['stripe.com','stripe.network','hcaptcha.com'].includes(h)&&host.endsWith('.'+h)))
 }
 export function paymentProxy(input) {
   const p=input.proxy
-  if(!p?.server||!p.username||!p.password||!isIP(input.expected_ip||''))throw Error('proxy_session_unavailable')
+  if(!p?.server||!p.username||!p.password||(input.skip_exit_ip_check!==true&&!isIP(input.expected_ip||'')))throw Error('proxy_session_unavailable')
   const u=new URL(p.server)
   if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||!u.port||u.username||u.password||u.search||u.hash||u.pathname!=='/')throw Error('proxy_session_unavailable')
   if(!Number.isSafeInteger(input.proxy_expires_at)||input.proxy_expires_at<=Date.now())throw Error('proxy_session_expired')
@@ -95,6 +95,9 @@ export async function run(input, commands, emit, dependencies={}) {
     if(custom||hasLogin)await ctx.addCookies(loginCookies(input.session_cookies))
     input.session_cookies=''
     const checkExit=async()=>{
+      if(Date.now()>=input.proxy_expires_at)throw Error('proxy_session_expired')
+      if(dependencies.signal?.aborted)throw Error('proxy_session_unavailable')
+      if(input.skip_exit_ip_check===true)return
       // Only retry a read-only probe through this unchanged proxy context. A
       // different valid IP is terminal; never replace the expected address.
       for(let attempt=1;attempt<=3;attempt++) {
@@ -211,6 +214,7 @@ export async function run(input, commands, emit, dependencies={}) {
       await verifyPage.goto(input.url,{waitUntil:'domcontentloaded',timeout:Math.min(input.prepare_seconds*1000,60000)})
     }
     stage('opening')
+    const preparationDeadline=Date.now()+input.prepare_seconds*1000
     await navigate()
     if(input.mode==='check') {
       const until=Date.now()+input.prepare_seconds*1000
@@ -236,8 +240,10 @@ export async function run(input, commands, emit, dependencies={}) {
       return null
     }
     const field = async (selectors,value,required=true)=>{
-      const until=Date.now()+(required?15000:500)
+      const until=required?preparationDeadline:Math.min(preparationDeadline,Date.now()+500)
       do {
+        if(Date.now()>=input.proxy_expires_at)throw Error('proxy_session_expired')
+        if(dependencies.signal?.aborted)throw Error('cancelled')
         const x=await find(selectors)
         if(x){const tag=await x.evaluate(el=>el.tagName);if(tag==='SELECT')await x.selectOption(value);else await x.fill(value);await x.blur();return true}
         await pause(200)

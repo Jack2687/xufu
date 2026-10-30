@@ -25,14 +25,15 @@ func (a *App) openOrderRenewalClient(ctx context.Context, order string) (*http.C
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(1886003)"); err != nil {
 		return nil, nil, err
 	}
-	var resource, enc, expected string
+	var resource, enc, expected, workflow string
 	var expires time.Time
 	var enabled bool
 	var capacity int
-	err = tx.QueryRow(ctx, `SELECT s.resource_id,s.endpoint_enc,s.expected_ip,s.expires_at,r.enabled,r.capacity
+	err = tx.QueryRow(ctx, `SELECT s.resource_id,s.endpoint_enc,s.expected_ip,s.expires_at,r.enabled,r.capacity,o.workflow
  FROM order_proxy_sessions s JOIN resources r ON r.id=s.resource_id JOIN payment_runs p ON p.order_id=s.order_id
- WHERE s.order_id=$1 AND p.state='succeeded' FOR UPDATE OF s`, order).Scan(&resource, &enc, &expected, &expires, &enabled, &capacity)
-	if err == pgx.ErrNoRows || (err == nil && (enc == "" || net.ParseIP(expected) == nil || !enabled)) {
+ JOIN orders o ON o.id=s.order_id
+ WHERE s.order_id=$1 AND p.state='succeeded' FOR UPDATE OF s`, order).Scan(&resource, &enc, &expected, &expires, &enabled, &capacity, &workflow)
+	if err == pgx.ErrNoRows || (err == nil && (enc == "" || (workflow != "subscription" && net.ParseIP(expected) == nil) || !enabled)) {
 		return nil, nil, checkoutFailure("proxy_session_unavailable", false, false)
 	}
 	if err != nil {
@@ -71,7 +72,7 @@ func (a *App) openOrderRenewalClient(ctx context.Context, order string) (*http.C
 		return nil, nil, err
 	}
 	probe := *client
-	client.Transport = &orderRenewalTransport{base: client.Transport, probe: &probe, expected: net.ParseIP(expected), expires: expires}
+	client.Transport = &orderRenewalTransport{base: client.Transport, probe: &probe, expected: net.ParseIP(expected), expires: expires, skipExitIPCheck: workflow == "subscription"}
 	return client, func() {
 		closeTransport()
 		release, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -80,18 +81,22 @@ func (a *App) openOrderRenewalClient(ctx context.Context, order string) (*http.C
 	}, nil
 }
 
-// Every post-payment request, including Session refresh, checks the original
-// exit through that same bound proxy. Never send account credentials to the probe.
+// Post-payment work keeps the original endpoint and expiration. Subscription
+// work no longer probes its exit; historical non-subscription orders still do.
 type orderRenewalTransport struct {
-	base     http.RoundTripper
-	probe    *http.Client
-	expected net.IP
-	expires  time.Time
+	base            http.RoundTripper
+	probe           *http.Client
+	expected        net.IP
+	expires         time.Time
+	skipExitIPCheck bool
 }
 
 func (t *orderRenewalTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if !t.expires.After(time.Now()) {
 		return nil, checkoutFailure("proxy_session_expired", false, false)
+	}
+	if t.skipExitIPCheck {
+		return t.base.RoundTrip(r)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	v, err := providerJSON(ctx, t.probe, "GET", "https://ipinfo.io/json", http.Header{"Accept": {"application/json"}}, nil, false)

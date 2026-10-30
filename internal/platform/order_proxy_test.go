@@ -2,7 +2,6 @@ package platform
 
 import (
 	"context"
-	"errors"
 	"net/url"
 	"strconv"
 	"strings"
@@ -42,7 +41,7 @@ func TestIPRoyalOrderSession(t *testing.T) {
 	}
 }
 
-func TestOrderProxyRetryKeepsSessionAndStopsIPDrift(t *testing.T) {
+func TestOrderProxyRetryKeepsSessionWithoutIPComparison(t *testing.T) {
 	h := setupTest(t)
 	ctx := context.Background()
 	resource := h.addProxy("PH", 1)
@@ -72,12 +71,13 @@ func TestOrderProxyRetryKeepsSessionAndStopsIPDrift(t *testing.T) {
 	if first != next {
 		t.Fatal("safe retry replaced encrypted proxy session")
 	}
-	if e = h.a.recordOrderProxyIP(ctx, j, "203.0.113.3"); e == nil {
-		t.Fatal("IP drift accepted")
+	if e = h.a.recordOrderProxyIP(ctx, j, "203.0.113.3"); e != nil {
+		t.Fatal("observed IP change must not reject the original proxy", e)
 	}
-	var failure checkoutError
-	if !errors.As(e, &failure) || failure.Code != "proxy_session_changed" {
-		t.Fatal("wrong error")
+	var observed string
+	h.a.DB.QueryRow(ctx, "SELECT expected_ip FROM order_proxy_sessions WHERE order_id=$1", id).Scan(&observed)
+	if observed != "203.0.113.2" {
+		t.Fatal("initial observation was overwritten")
 	}
 	if e = h.a.recordOrderProxyIP(ctx, j, "203.0.113.2"); e != nil {
 		t.Fatal(e)

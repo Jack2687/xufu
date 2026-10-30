@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"math"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -107,29 +106,11 @@ func TestActionUsesOriginalContextAndNeverSettlesFromBrowser(t *testing.T) {
 			if err = h.a.DB.QueryRow(r.ctx, "SELECT endpoint_enc,details_enc FROM order_proxy_sessions JOIN order_billing USING(order_id) WHERE order_id=$1", r.id).Scan(&beforeProxy, &beforeBilling); err != nil {
 				t.Fatal(err)
 			}
-			endpoint, _ := h.a.decrypt(beforeProxy)
-			probes := 0
-			h.a.actionProbeClient = func(selected string, _ time.Duration) (*http.Client, func(), error) {
-				if selected != endpoint {
-					t.Error("order session replaced")
-				}
-				return &http.Client{Transport: testRoundTrip(func(req *http.Request) (*http.Response, error) {
-					probes++
-					ip := "203.0.113.2"
-					if mode == "ip_drift" && probes > 1 {
-						ip = "203.0.113.3"
-					}
-					if req.URL.Host != "ipinfo.io" || req.Header.Get("Authorization") != "" {
-						t.Error("unexpected credential-bearing request")
-					}
-					return providerResponse(200, M{"ip": ip, "country": "PH"}), nil
-				})}, func() {}, nil
-			}
 			process := &fixtureAction{events: make(chan actionEvent, 6)}
 			started := false
 			h.a.actionStart = func(ctx context.Context, in actionInput) (actionProcess, error) {
 				started = true
-				if in.ClientSecret != cp.ClientSecret || in.PublishableKey != cp.PublishableKey || in.ExpectedIP != "203.0.113.2" || in.Proxy.Password == "" || in.ExpiresAt > time.Now().Add(10*time.Minute).Unix() {
+				if in.ClientSecret != cp.ClientSecret || in.PublishableKey != cp.PublishableKey || in.Proxy.Password == "" || in.ExpiresAt > time.Now().Add(10*time.Minute).Unix() {
 					t.Error("original private context changed")
 				}
 				if mode == "runtime_error" {
@@ -152,7 +133,7 @@ func TestActionUsesOriginalContextAndNeverSettlesFromBrowser(t *testing.T) {
 			}
 			v := &paymentAction{}
 			err = r.runPaymentAction(cp, v)
-			want := map[string]string{"runtime_error": "action_runtime_unavailable", "interrupted": "action_interrupted", "ip_drift": "proxy_session_changed", "expired": "proxy_session_expired", "bad_intent": "payment_intent_state_unavailable"}[mode]
+			want := map[string]string{"runtime_error": "action_runtime_unavailable", "interrupted": "action_interrupted", "expired": "proxy_session_expired", "bad_intent": "payment_intent_state_unavailable"}[mode]
 			if cslive.ErrorCode(err) != want {
 				t.Fatalf("result %v, wanted %s", err, want)
 			}

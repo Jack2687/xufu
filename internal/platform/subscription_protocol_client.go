@@ -2,8 +2,6 @@ package platform
 
 import (
 	"context"
-	"net"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -40,18 +38,12 @@ func (r *protocolRun) client(ttl int) (protocolPaymentClient, func(), error) {
 	if err != nil {
 		return nil, nil, cslive.Failure("proxy_session_unavailable")
 	}
-	probe, closeProbe, err := newPaymentClient(endpoint, 8*time.Second)
-	if err != nil {
-		return nil, nil, cslive.Failure("proxy_session_unavailable")
-	}
 	bridge, closeBridge, err := openBrowserProxy(r.ctx, endpoint)
 	if err != nil {
-		closeProbe()
 		return nil, nil, cslive.Failure("proxy_session_unavailable")
 	}
 	closeAll := func() {
 		closeBridge()
-		closeProbe()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		r.a.releaseProxy(ctx, proxyLease)
@@ -67,7 +59,7 @@ func (r *protocolRun) client(ttl int) (protocolPaymentClient, func(), error) {
 		if err != nil || u.Scheme != "https" || u.User != nil || !browserProxyHost(u.Hostname()) || (u.Port() != "" && u.Port() != "443") {
 			return cslive.Failure("invalid_request_url")
 		}
-		if err = r.guardIP(ctx, probe); err != nil {
+		if err = r.guardProxy(ctx); err != nil {
 			return err
 		}
 		if method == "POST" && u.Host == "chatgpt.com" && u.Path == "/backend-api/payments/checkout" && r.job != nil {
@@ -91,52 +83,19 @@ func (r *protocolRun) client(ttl int) (protocolPaymentClient, func(), error) {
 	return nativeProtocolClient{c}, closeAll, nil
 }
 
-func (r *protocolRun) guardIP(ctx context.Context, probe *http.Client) error {
-	var expected string
+// Keep the original proxy binding and live leases without querying its exit IP.
+func (r *protocolRun) guardProxy(ctx context.Context) error {
 	var expires time.Time
 	var enabled bool
-	err := r.a.DB.QueryRow(ctx, `SELECT s.expected_ip,s.expires_at,p.enabled FROM order_proxy_sessions s
+	err := r.a.DB.QueryRow(ctx, `SELECT s.expires_at,p.enabled FROM order_proxy_sessions s
  JOIN resources p ON p.id=s.resource_id JOIN subscription_protocol c ON c.order_id=s.order_id
- JOIN checkout_runs j ON j.order_id=s.order_id JOIN proxy_leases l ON l.id=j.proxy_lease_id AND l.expires_at>now()
- WHERE s.order_id=$1 AND c.lease_token=$2 AND c.lease_until>now() AND c.expires_at>now()`, r.id, r.lease).Scan(&expected, &expires, &enabled)
+ JOIN checkout_runs j ON j.order_id=s.order_id JOIN proxy_leases l ON l.id=j.proxy_lease_id AND l.resource_id=s.resource_id AND l.expires_at>now()
+ WHERE s.order_id=$1 AND s.endpoint_enc<>'' AND c.lease_token=$2 AND c.lease_until>now() AND c.expires_at>now()`, r.id, r.lease).Scan(&expires, &enabled)
 	if err != nil || !enabled {
 		return cslive.Failure("proxy_session_unavailable")
 	}
 	if !expires.After(time.Now()) {
 		return cslive.Failure("proxy_session_expired")
-	}
-	check, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	v, err := providerJSON(r.a.proxyProbeContext(check, r.id), probe, "GET", "https://ipinfo.io/json", http.Header{"Accept": {"application/json"}}, nil, false)
-	if err != nil {
-		return cslive.Failure("proxy_session_unavailable")
-	}
-	ip := net.ParseIP(str(v, "ip"))
-	if ip == nil {
-		return cslive.Failure("proxy_session_unavailable")
-	}
-	if expected == "" {
-		if r.job == nil {
-			return cslive.Failure("proxy_session_unavailable")
-		}
-		if !strings.EqualFold(str(v, "country"), r.country) {
-			return cslive.Failure("proxy_country_mismatch")
-		}
-		if err = r.a.recordOrderProxyIP(ctx, r.job, ip.String()); err != nil {
-			return cslive.Failure("proxy_session_changed")
-		}
-		r.a.paymentTrace(ctx, r.id, "network", "completed", "", 0)
-	} else if !net.ParseIP(expected).Equal(ip) {
-		return cslive.Failure("proxy_session_changed")
-	}
-	if !expires.After(time.Now()) {
-		return cslive.Failure("proxy_session_expired")
-	}
-	var valid bool
-	if r.a.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM subscription_protocol s JOIN checkout_runs c ON c.order_id=s.order_id
- JOIN proxy_leases l ON l.id=c.proxy_lease_id JOIN resources p ON p.id=c.resource_id
- WHERE s.order_id=$1 AND s.lease_token=$2 AND s.lease_until>now() AND s.expires_at>now() AND l.expires_at>now() AND p.enabled)`, r.id, r.lease).Scan(&valid) != nil || !valid {
-		return cslive.Failure("proxy_session_unavailable")
 	}
 	return nil
 }
@@ -270,7 +229,7 @@ func protocolDiagnosticPhase(path, phase string) string {
 		return "billing"
 	case strings.Contains(path, "/confirm"), strings.Contains(path, "/approve"), strings.Contains(path, "subscription/update"):
 		return "confirming"
-	case strings.Contains(path, "payment_intents"), strings.Contains(path, "/poll"):
+	case strings.Contains(path, "payment_intents"), strings.Contains(path, "/poll"), strings.Contains(path, "/payment_pages/"):
 		return "checking"
 	}
 	switch phase {

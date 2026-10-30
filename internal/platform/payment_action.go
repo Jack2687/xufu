@@ -21,7 +21,6 @@ import (
 
 type actionInput struct {
 	Proxy          *browserProxyInput `json:"proxy"`
-	ExpectedIP     string             `json:"expected_ip"`
 	ExpiresAt      int64              `json:"expires_at"`
 	PublishableKey string             `json:"publishable_key"`
 	ClientSecret   string             `json:"client_secret"`
@@ -245,25 +244,16 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) (
 	if cp.Payment != "action_required" || !paymentIntentID.MatchString(cp.PaymentIntentID) || !strings.HasPrefix(cp.ClientSecret, cp.PaymentIntentID+"_secret_") || cp.PublishableKey == "" {
 		return cslive.Failure("payment_intent_state_unavailable")
 	}
-	var enc, expected string
+	var enc string
 	var expires time.Time
-	if err := r.a.DB.QueryRow(r.ctx, "SELECT endpoint_enc,expected_ip,expires_at FROM order_proxy_sessions WHERE order_id=$1", r.id).Scan(&enc, &expected, &expires); err != nil {
+	if err := r.a.DB.QueryRow(r.ctx, "SELECT endpoint_enc,expires_at FROM order_proxy_sessions WHERE order_id=$1", r.id).Scan(&enc, &expires); err != nil {
 		return cslive.Failure("proxy_session_unavailable")
 	}
 	endpoint, err := r.a.decrypt(enc)
 	if err != nil {
 		return cslive.Failure("proxy_session_unavailable")
 	}
-	factory := r.a.actionProbeClient
-	if factory == nil {
-		factory = newPaymentClient
-	}
-	probe, closeProbe, err := factory(endpoint, 8*time.Second)
-	if err != nil {
-		return cslive.Failure("proxy_session_unavailable")
-	}
-	defer closeProbe()
-	if err = r.guardIP(r.ctx, probe); err != nil {
+	if err = r.guardProxy(r.ctx); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithDeadline(r.ctx, minTime(expires, time.Now().Add(10*time.Minute)))
@@ -291,7 +281,7 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) (
 		if _, e := publicDialAddress(ctx, net.JoinHostPort(host, "443")); e != nil {
 			return false
 		}
-		return true // Every HTTP attempt also requests a lease/IP guard over private IPC.
+		return true // Every HTTP attempt also checks the lease over private IPC.
 	})
 	if err != nil {
 		return cslive.Failure("proxy_session_unavailable")
@@ -305,7 +295,7 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) (
 	if starter == nil {
 		starter = startActionNode
 	}
-	process, err := starter(ctx, actionInput{Proxy: bridge, ExpectedIP: expected, ExpiresAt: expiry.Unix(), PublishableKey: cp.PublishableKey, ClientSecret: cp.ClientSecret, Automatic: v.automatic})
+	process, err := starter(ctx, actionInput{Proxy: bridge, ExpiresAt: expiry.Unix(), PublishableKey: cp.PublishableKey, ClientSecret: cp.ClientSecret, Automatic: v.automatic})
 	if err != nil {
 		return cslive.Failure("action_runtime_unavailable")
 	}
@@ -316,7 +306,7 @@ func (r *protocolRun) runPaymentAction(cp cslive.Checkpoint, v *paymentAction) (
 	completed := false
 	runtimeCode := "action_interrupted"
 	// Browser resources arrive concurrently. Share only an in-flight check;
-	// never reuse a completed IP check or block the IPC reader behind network IO.
+	// never reuse a completed lease check or block the IPC reader behind database IO.
 	guardDone := make(chan error, 1)
 	pendingGuards := []int{}
 	var terminal *actionEvent
@@ -366,7 +356,7 @@ events:
 				go func() {
 					check, stop := context.WithTimeout(ctx, 10*time.Second)
 					defer stop()
-					guardDone <- r.guardIP(check, probe)
+					guardDone <- r.guardProxy(check)
 				}()
 			}
 			continue

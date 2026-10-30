@@ -3,10 +3,15 @@ package cslive
 
 // 只提取状态和代码，Observer 再次白名单过滤；不发送 next_action 的完整内容。
 func (t *gptpay_transaction) observePaymentDiagnostics(data protocol_Map) {
+	t.providerCode, t.declineCode = t.emitPaymentDiagnostics(data)
+}
+
+// Intermediate replies are diagnostic evidence only. Recording them must not
+// change the payment state or the error classification of the final result.
+func (t *gptpay_transaction) emitPaymentDiagnostics(data protocol_Map) (providerCode, declineCode string) {
 	nodes := []protocol_Map{data, protocol_AsMap(data["payment_intent"]), protocol_AsMap(protocol_AsMap(data["submission_attempt"])["payment_intent"]), protocol_AsMap(protocol_AsMap(data["error"])["payment_intent"]), protocol_AsMap(data["submission_attempt"])}
 	sources := []string{"response", "payment_intent", "submission_payment_intent", "error_payment_intent", "submission_attempt"}
 	classified := string(stripe_Classify(data))
-	t.providerCode, t.declineCode = "", ""
 	for i, node := range nodes {
 		action := protocol_AsMap(node["next_action"])
 		failure := protocol_AsMap(node["last_payment_error"])
@@ -36,8 +41,8 @@ func (t *gptpay_transaction) observePaymentDiagnostics(data protocol_Map) {
 		}
 		if code := failure["code"]; code != nil {
 			if classified == "not_charged" {
-				t.providerCode = observability_SafePaymentCode(protocol_AsString(code), false)
-				t.declineCode = observability_SafePaymentCode(protocol_AsString(failure["decline_code"]), true)
+				providerCode = observability_SafePaymentCode(protocol_AsString(code), false)
+				declineCode = observability_SafePaymentCode(protocol_AsString(failure["decline_code"]), true)
 			}
 			fields["provider_code"] = code
 		}
@@ -46,4 +51,5 @@ func (t *gptpay_transaction) observePaymentDiagnostics(data protocol_Map) {
 		}
 		t.observer.Emit("payment_diagnostic", fields)
 	}
+	return
 }

@@ -48,6 +48,9 @@ func TestCheckoutProviderProtocol(t *testing.T) {
 				if _, exists := body["entry_point"]; exists {
 					t.Fatal("hosted mode must omit entry_point like generator.py")
 				}
+				if product == "pro5x" && (body["plan_name"] != "chatgptprolite" || body["billing_details"].(map[string]any)["currency"] != "PHP") {
+					t.Fatal("Pro 5x / PHP differs from the reference request")
+				}
 				if product == "team_premium" {
 					team := body["team_plan_data"].(map[string]any)
 					if len(team["seat_quantities"].([]any)) != 2 {

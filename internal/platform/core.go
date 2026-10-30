@@ -43,7 +43,6 @@ type App struct {
 	payments             map[string]*paymentSession
 	paymentActions       map[string]*paymentAction
 	actionStart          actionStarter
-	actionProbeClient    func(string, time.Duration) (*http.Client, func(), error)
 	protocolClient       func(*protocolRun, int) (protocolPaymentClient, func(), error)
 	checkoutClient       func(cslive.Config, cslive.Hooks) protocolCheckoutClient
 	legacyCheckoutClient func(context.Context, string) (*http.Client, func(), error)

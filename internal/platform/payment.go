@@ -33,7 +33,7 @@ var paymentMessages = map[string]string{
 	"proxy_session_expired":           "本次办理网络会话已到期，未继续提交付款。",
 	"network_restarted":               "本轮未提交扣款，正在重新准备办理网络和结账信息。",
 	"network_check":                   "正在核对本次办理网络。",
-	"network_verified":                "本次办理网络已核对一致。",
+	"network_verified":                "本次办理原代理会话可用。",
 	"result_check":                    "正在核实付款结果。",
 	"opening":                         "正在连接付款页面。", "billing": "正在准备账单资料。", "pricing": "正在核对最终金额与税费。", "confirming": "已收到金额确认，正在提交付款。",
 	"quoted": "报价已就绪，请核对含税金额后确认付款。", "succeeded": "上游已确认付款成功，服务费已结算。", "preparation_failed": "付款准备未完成，请检查网络或付款资料后重新准备。",
@@ -121,7 +121,7 @@ func (a *App) paymentDetails(ctx context.Context, id string) M {
 		if a.DB.QueryRow(ctx, `SELECT s.checkpoint_enc<>'' AND s.expires_at>now() AND (s.lease_until IS NULL OR s.lease_until<now())
  AND (p.state IN ('review','action_required') OR (p.state='succeeded' AND (o.activation='review' OR o.renewal='review')))
  AND u.renewal_state<>'delegated' AND EXISTS(SELECT 1 FROM order_proxy_sessions b JOIN resources r ON r.id=b.resource_id
- WHERE b.order_id=s.order_id AND b.expires_at>now() AND b.endpoint_enc<>'' AND b.expected_ip<>'' AND r.enabled)
+ WHERE b.order_id=s.order_id AND b.expires_at>now() AND b.endpoint_enc<>'' AND r.enabled)
  FROM subscription_protocol s JOIN payment_runs p ON p.order_id=s.order_id JOIN orders o ON o.id=s.order_id
  JOIN subscription_runs u ON u.order_id=s.order_id WHERE s.order_id=$1`, id).Scan(&canCheck) == nil {
 			result["can_check"] = canCheck
@@ -402,6 +402,7 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 		}
 		defer closeBridge()
 		in.Proxy, in.ExpectedIP, in.ProxyExpiresAt = bridge, expectedIP, proxyExpires.UnixMilli()
+		in.SkipExitIPCheck = a.isSubscription(ctx, id)
 		proc, e := start(ctx, in)
 		in.Card = cardInput{}
 		in.Billing = nil

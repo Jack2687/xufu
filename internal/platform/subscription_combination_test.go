@@ -194,14 +194,7 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 							if o.PreparedCheckout == nil || o.PreparedCheckout.URL != link || o.PreparedCheckout.CheckoutID != "cs_live_Mixed" || o.CheckoutType != kind || o.CancelRenewal == nil || *o.CancelRenewal != (outcome != "keep") {
 								t.Fatal("lost original checkout/options")
 							}
-							probe := &http.Client{Transport: testRoundTrip(func(*http.Request) (*http.Response, error) {
-								ip := "203.0.113.2"
-								if outcome == "drift" {
-									ip = "203.0.113.3"
-								}
-								return providerResponse(200, M{"ip": ip, "country": "PH"}), nil
-							})}
-							if err := r.guardIP(ctx, probe); err != nil {
+							if err := r.guardProxy(ctx); err != nil {
 								return cslive.Result{}, err
 							}
 							var billing M
@@ -230,7 +223,7 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 					if payment == "legacy" {
 						select {
 						case in := <-inputs:
-							if in.URL != link || in.ExpectedIP != "203.0.113.2" || !in.AutoConfirm || in.Proxy.Server == "" {
+							if in.URL != link || !in.SkipExitIPCheck || !in.AutoConfirm || in.Proxy.Server == "" {
 								t.Fatal("browser lost original context")
 							}
 							if kind == "oaics" && in.SessionCookies != refreshed.Cookies {
@@ -249,14 +242,12 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 							}
 							return &http.Client{Transport: testRoundTrip(func(req *http.Request) (*http.Response, error) {
 								if req.URL.Hostname() == "ipinfo.io" {
+									t.Fatal("subscription performed an exit-IP probe")
 									ip := "203.0.113.2"
 									if outcome == "drift" {
 										ip = "203.0.113.3"
 									}
 									return providerResponse(200, M{"ip": ip, "country": "PH"}), nil
-								}
-								if outcome == "drift" {
-									t.Fatal("business request after IP drift")
 								}
 								if req.URL.Path == "/api/auth/session" {
 									refreshes++
@@ -277,15 +268,12 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 							t.Fatal("post-payment task", err)
 						}
 						h.a.runRenewal(ctx, id, lease)
-						if outcome == "cancel" && (cancels != 1 || refreshes != 1) {
+						if outcome != "keep" && (cancels != 1 || refreshes != 1) {
 							t.Fatal("legacy renewal not completed", cancels, refreshes)
 						}
-						if outcome != "cancel" && (cancels != 0 || refreshes != 0) {
+						if outcome == "keep" && (cancels != 0 || refreshes != 0) {
 							t.Fatal("unexpected renewal mutation")
 						}
-					} else if outcome == "drift" {
-						waitPayment(t, h, id, "failed")
-						paymentBalances(t, h, 100000, 0)
 					} else {
 						if pays != 1 {
 							t.Fatal("wrong native payment count")
@@ -299,7 +287,7 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 					if afterProxy != originalProxy || afterBilling != originalBilling {
 						t.Fatal("fixed proxy or billing changed")
 					}
-					if outcome != "drift" {
+					{
 						want := "disabled"
 						if outcome == "keep" {
 							want = "kept"
@@ -308,8 +296,6 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 							t.Fatal("lifecycle incomplete", activation, renewal)
 						}
 						paymentBalances(t, h, 90000, 0)
-					} else if payment == "legacy" && activation != "review" {
-						t.Fatal("drift not stopped")
 					}
 					assertSubscriptionPrivate(t, h, id)
 				})

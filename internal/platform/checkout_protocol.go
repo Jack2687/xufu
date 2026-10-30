@@ -2,7 +2,6 @@ package platform
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -24,7 +23,7 @@ type legacyCheckoutGuard struct {
 
 func (t *legacyCheckoutGuard) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.URL.Hostname() != "ipinfo.io" {
-		if err := t.guard.guardIP(req.Context()); err != nil {
+		if err := t.guard.guardProxy(req.Context()); err != nil {
 			return nil, checkoutFailure(cslive.ErrorCode(err), false, false)
 		}
 	}
@@ -36,7 +35,6 @@ type protocolCheckoutRun struct {
 	a       *App
 	job     *Job
 	country string
-	probe   *http.Client
 	written bool
 }
 
@@ -55,7 +53,7 @@ func (r *protocolCheckoutRun) beforeRequest(ctx context.Context, method, target 
 	if method != "GET" && (method != "POST" || !allowedWrite) {
 		return cslive.Failure("invalid_request_url")
 	}
-	if err = r.guardIP(ctx); err != nil {
+	if err = r.guardProxy(ctx); err != nil {
 		return err
 	}
 	if method == "POST" && u.Hostname() == "chatgpt.com" && u.Path == "/backend-api/payments/checkout" {
@@ -70,48 +68,19 @@ func (r *protocolCheckoutRun) beforeRequest(ctx context.Context, method, target 
 	return nil
 }
 
-func (r *protocolCheckoutRun) guardIP(ctx context.Context) error {
-	var expected string
+func (r *protocolCheckoutRun) guardProxy(ctx context.Context) error {
 	var expires time.Time
 	var enabled bool
-	err := r.a.DB.QueryRow(ctx, `SELECT s.expected_ip,s.expires_at,p.enabled FROM order_proxy_sessions s
+	err := r.a.DB.QueryRow(ctx, `SELECT s.expires_at,p.enabled FROM order_proxy_sessions s
  JOIN resources p ON p.id=s.resource_id JOIN checkout_runs c ON c.order_id=s.order_id
  JOIN proxy_leases l ON l.id=c.proxy_lease_id AND l.resource_id=s.resource_id AND l.expires_at>now()
  JOIN jobs j ON j.order_id=s.order_id AND j.state='running' AND j.lease_token=$2 AND j.lease_until>now()
- WHERE s.order_id=$1 AND c.credentials_expires_at>now()`, r.job.OrderID, r.job.Lease).Scan(&expected, &expires, &enabled)
+ WHERE s.order_id=$1 AND s.endpoint_enc<>'' AND c.credentials_expires_at>now()`, r.job.OrderID, r.job.Lease).Scan(&expires, &enabled)
 	if err != nil || !enabled {
 		return cslive.Failure("proxy_session_unavailable")
 	}
 	if !expires.After(time.Now()) {
 		return cslive.Failure("proxy_session_expired")
-	}
-	check, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	v, err := providerJSON(r.a.proxyProbeContext(check, r.job.OrderID), r.probe, "GET", "https://ipinfo.io/json", http.Header{"Accept": {"application/json"}}, nil, false)
-	if err != nil || net.ParseIP(str(v, "ip")) == nil {
-		return cslive.Failure("proxy_session_unavailable")
-	}
-	if !strings.EqualFold(str(v, "country"), r.country) {
-		return cslive.Failure("proxy_country_mismatch")
-	}
-	ip := net.ParseIP(str(v, "ip"))
-	if expected != "" && !ip.Equal(net.ParseIP(expected)) {
-		return cslive.Failure("proxy_session_changed")
-	}
-	if err = r.a.recordOrderProxyIP(ctx, r.job, ip.String()); err != nil {
-		return cslive.Failure("proxy_session_changed")
-	}
-	var valid bool
-	err = r.a.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs j JOIN checkout_runs c ON c.order_id=j.order_id
- JOIN order_proxy_sessions s ON s.order_id=j.order_id JOIN resources p ON p.id=s.resource_id
- JOIN proxy_leases l ON l.id=c.proxy_lease_id AND l.resource_id=s.resource_id
- WHERE j.id=$1 AND j.lease_token=$2 AND j.state='running' AND j.lease_until>now()
-	 AND l.expires_at>now() AND s.expires_at>now() AND c.credentials_expires_at>now() AND p.enabled)`, r.job.ID, r.job.Lease).Scan(&valid)
-	if err != nil || !valid {
-		return cslive.Failure("proxy_session_unavailable")
-	}
-	if expected == "" {
-		r.a.paymentTrace(ctx, r.job.OrderID, "network", "completed", "", 0)
 	}
 	return nil
 }
@@ -121,11 +90,6 @@ func (a *App) generateProtocolCheckout(ctx context.Context, j *Job, endpoint str
 	if err != nil {
 		return checkoutOutput{}, checkoutFailure("invalid_session", false, false)
 	}
-	probe, closeProbe, err := newPaymentClient(endpoint, 8*time.Second)
-	if err != nil {
-		return checkoutOutput{}, checkoutFailure("proxy_unavailable", false, false)
-	}
-	defer closeProbe()
 	bridge, closeBridge, err := openBrowserProxy(ctx, endpoint)
 	if err != nil {
 		return checkoutOutput{}, checkoutFailure("proxy_unavailable", false, false)
@@ -139,7 +103,7 @@ func (a *App) generateProtocolCheckout(ctx context.Context, j *Job, endpoint str
 	config := cslive.DefaultConfig()
 	config.Proxy, config.Currency = proxyURL.String(), strings.ToUpper(currencyForCountry(in.Country))
 	config.Timezone = map[string]string{"PH": "Asia/Manila", "US": "America/New_York", "JP": "Asia/Tokyo", "SG": "Asia/Singapore", "GB": "Europe/London", "EG": "Africa/Cairo", "TR": "Europe/Istanbul"}[in.Country]
-	run := &protocolCheckoutRun{a: a, job: j, country: in.Country, probe: probe}
+	run := &protocolCheckoutRun{a: a, job: j, country: in.Country}
 	diagnostics := &protocolRun{a: a, ctx: ctx, id: j.OrderID}
 	hooks := cslive.Hooks{BeforeRequest: run.beforeRequest, Progress: diagnostics.progress, Event: diagnostics.event}
 	var client protocolCheckoutClient

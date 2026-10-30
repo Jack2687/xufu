@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -177,7 +176,7 @@ func TestProtocolLinkHostedOnly(t *testing.T) {
 }
 
 func TestProtocolLinkRequestGuard(t *testing.T) {
-	for _, mode := range []string{"normal", "country", "drift", "disabled", "expired", "lease", "capacity"} {
+	for _, mode := range []string{"normal", "drift", "disabled", "expired", "lease", "capacity"} {
 		t.Run(mode, func(t *testing.T) {
 			h := setupTest(t)
 			ctx := context.Background()
@@ -187,25 +186,11 @@ func TestProtocolLinkRequestGuard(t *testing.T) {
 			if err != nil || job == nil {
 				t.Fatal("claim failed", err)
 			}
-			probeCalls := 0
-			run := &protocolCheckoutRun{a: h.a, job: job, country: "PH", probe: &http.Client{Transport: testRoundTrip(func(req *http.Request) (*http.Response, error) {
-				probeCalls++
-				if req.URL.String() != "https://ipinfo.io/json" || req.Header.Get("Authorization") != "" {
-					t.Fatal("unsafe probe")
-				}
-				country := "PH"
-				if mode == "country" {
-					country = "US"
-				}
-				return providerResponse(200, M{"country": country, "ip": "203.0.113.2"}), nil
-			})}}
+			run := &protocolCheckoutRun{a: h.a, job: job, country: "PH"}
 			for _, target := range []string{"https://api.stripe.com/v1/payment_methods", "https://chatgpt.com/backend-api/subscriptions", "https://api.stripe.com/v1/payment_pages/cs_live_Test/confirm", "https://chatgpt.com/backend-api/payments/subscription/update", "http://chatgpt.com/backend-api/payments/checkout"} {
 				if run.beforeRequest(ctx, "POST", target) == nil {
 					t.Fatal("forbidden write permitted")
 				}
-			}
-			if probeCalls != 0 {
-				t.Fatal("invalid request reached probe")
 			}
 			sql := map[string]string{
 				"drift":    "UPDATE order_proxy_sessions SET expected_ip='203.0.113.9' WHERE order_id=$1",
@@ -220,7 +205,7 @@ func TestProtocolLinkRequestGuard(t *testing.T) {
 				}
 			}
 			err = run.beforeRequest(ctx, "POST", checkoutEndpoint)
-			if mode == "normal" {
+			if mode == "normal" || mode == "drift" {
 				if err != nil || !run.written {
 					t.Fatal("checkout blocked", err)
 				}
@@ -234,7 +219,7 @@ func TestProtocolLinkRequestGuard(t *testing.T) {
 				t.Fatal("guard ignored", mode)
 			}
 			var written bool
-			if err = h.a.DB.QueryRow(ctx, "SELECT side_effect_started FROM jobs WHERE order_id=$1", id).Scan(&written); err != nil || written != (mode == "normal") {
+			if err = h.a.DB.QueryRow(ctx, "SELECT side_effect_started FROM jobs WHERE order_id=$1", id).Scan(&written); err != nil || written != (mode == "normal" || mode == "drift") {
 				t.Fatal("wrong durable fence", err)
 			}
 		})

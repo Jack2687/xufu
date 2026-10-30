@@ -11,7 +11,7 @@ var paymentPhases = map[string]string{
 	"verification":    "官方付款验证",
 	"session_refresh": "刷新账号授权", "account_check": "在线核对账号", "activation": "核实订阅生效",
 	"accepted": "申请受理与资料校验", "queue": "等待办理资源", "funds": "服务费处理", "complete": "订阅流程结束",
-	"proxy": "分配办理网络", "checkout": "生成结账信息", "network": "核对出口一致性",
+	"proxy": "分配办理网络", "checkout": "生成结账信息", "network": "检查办理网络",
 	"opening": "打开付款页面", "billing": "填写账单资料", "pricing": "核对金额与税费",
 	"confirming": "提交付款", "submitted": "付款请求已提交", "checking": "核实付款结果",
 	"result": "付款处理结果", "restart": "重建会话与结账信息", "renewal": "取消自动续费",
@@ -21,6 +21,7 @@ var traceCodes = map[string]string{
 	"hosted_url_invalid":           "结账长链校验未通过，已停止继续办理",
 	"checkout_runtime_unavailable": "提链运行环境缺少 curl",
 	"subscription_absent":          "当前账号尚无订阅，属于新开通前的正常查询结果",
+	"payment_pending":              "原付款尚未取得最终结果，保留原交易待核实",
 	"verification_continuing":      "付款需要后续验证，系统将自动接续处理，无需人工发起",
 	"action_guard_overloaded":      "验证资源检查数量异常，已停止本轮验证并保留原交易",
 	"automatic_verification":       "服务端自动接续原交易的官方验证", "action_timeout": "官方验证在有效期内未完成，原交易保留待核实",
@@ -74,6 +75,13 @@ func (a *App) paymentTraceDetails(ctx context.Context, id string) []M {
 	for _, row := range rows {
 		row["label"] = paymentPhases[str(row, "phase")]
 		code := str(row, "code")
+		diagnostics, _ := row["diagnostics"].(map[string]any)
+		httpStatus, _ := row["http_status"].(int32)
+		// Historical pending observations describe an unresolved result, not a
+		// completed payment or a confirmed decline. Keep stored audit rows intact.
+		if httpStatus < 400 && (code == "pending" || code == "payment_pending" || diagnostics["payment_state"] == "pending") {
+			row["state"] = "review"
+		}
 		description, ok := traceCodes[code]
 		if !ok {
 			description = paymentMessages[code]

@@ -23,6 +23,9 @@ func (t *gptpay_transaction) runHostedFlow(card model_Card, billing model_Billin
 	if e != nil {
 		return e
 	}
+	// Preserve the confirmation response's safe statuses before subsequent page
+	// reads replace it. This emits diagnostics without changing payment decisions.
+	t.emitPaymentDiagnostics(data)
 	data, e = t.pollHostedPayment(data)
 	if e != nil {
 		return e

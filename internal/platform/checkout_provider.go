@@ -59,7 +59,7 @@ func providerJSON(ctx context.Context, c *http.Client, method, target string, he
 	var status int
 	var requestID string
 	ctx, timings := requestTimings(ctx)
-	details := M{}
+	details := M{"request_kind": providerRequestKind(method, target)}
 	defer func() {
 		for k, v := range timings() {
 			details[k] = v
@@ -85,6 +85,12 @@ func providerJSON(ctx context.Context, c *http.Client, method, target string, he
 	status, requestID = res.StatusCode, res.Header.Get("X-Request-Id")
 	if requestID == "" {
 		requestID = res.Header.Get("Request-Id")
+	}
+	if strings.EqualFold(strings.TrimSpace(res.Header.Get("Cf-Mitigated")), "challenge") {
+		details["challenge_required"] = true
+	}
+	if edgeID := res.Header.Get("Cf-Ray"); safeEdgeRequestID.MatchString(edgeID) {
+		details["edge_request_id"] = edgeID
 	}
 	data, e := io.ReadAll(io.LimitReader(res.Body, 1<<20+1))
 	if e != nil || len(data) > 1<<20 {
