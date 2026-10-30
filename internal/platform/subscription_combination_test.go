@@ -224,13 +224,13 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 						select {
 						case in := <-inputs:
 							if in.URL != link || !in.SkipExitIPCheck || !in.AutoConfirm || in.Proxy.Server == "" {
-								t.Fatal("browser lost original context")
+								t.Fatal("legacy payment lost original context")
 							}
 							if kind == "oaics" && in.SessionCookies != refreshed.Cookies {
-								t.Fatal("browser used pre-refresh cookies")
+								t.Fatal("legacy payment used pre-refresh cookies")
 							}
 						case <-time.After(5 * time.Second):
-							t.Fatal("browser not started")
+							t.Fatal("legacy payment not started")
 						}
 						process.events <- paymentEvent{Type: "quote", Amount: 1500, Currency: "php"}
 						waitPayment(t, h, id, "submitting")
@@ -253,8 +253,8 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 									refreshes++
 									return providerResponse(200, testSession("subscription@example.com")), nil
 								}
-								if refreshes == 0 && req.Header.Get("Authorization") != "Bearer "+refreshed.AccessToken {
-									t.Fatal("activation used old access token")
+								if refreshes == 0 {
+									t.Fatal("activation must refresh authorization before querying")
 								}
 								if req.Method == "POST" {
 									cancels++
@@ -268,10 +268,11 @@ func TestMixedSubscriptionWorkers(t *testing.T) {
 							t.Fatal("post-payment task", err)
 						}
 						h.a.runRenewal(ctx, id, lease)
-						if outcome != "keep" && (cancels != 1 || refreshes != 1) {
+						// Refresh before activation, and again before cancellation.
+						if outcome != "keep" && (cancels != 1 || refreshes != 2) {
 							t.Fatal("legacy renewal not completed", cancels, refreshes)
 						}
-						if outcome == "keep" && (cancels != 0 || refreshes != 0) {
+						if outcome == "keep" && (cancels != 0 || refreshes != 1) {
 							t.Fatal("unexpected renewal mutation")
 						}
 					} else {

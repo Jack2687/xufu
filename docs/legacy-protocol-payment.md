@@ -1,0 +1,23 @@
+# 旧付款协议执行器
+
+2026-10-30：`payment.subscription_flow=legacy` 改为 Go HTTPS 执行，不启动 Chromium/Playwright/Node，不回退到浏览器。`cslive` 付款未改。独立提链和四种提链/付款组合保持。
+
+## 执行顺序
+
+1. 读取原 Checkout、后台随机账单快照、原代理端点及供应商会话。每次请求检查任务、资源启用、代理期限和容量租约；不探测或比较出口 IP，不直连兜底。
+2. 长链从原 URL fragment 读取公开 Stripe key，必要时使用当前账号的官方 bootstrap；初始化原 Payment Page，更新真实账单税区，再 GET 原页面取得含税报价。短链保持原类型：`cs_live` 使用原 Payment Page，`oaics` 使用商户 taxes/confirm 和所返回的原 PaymentIntent。
+3. 原有数据库报价及提交防重事务先完成，协议执行器才接受 confirm。确认前再次取得报价；金额、币种或税务状态不一致则停止。卡片只在内存中进入 Stripe 请求；不保存卡号/CVV，不输出请求体、Cookie、AT、代理凭据或原始响应。
+4. 长链创建 PaymentMethod 后仅提交一次 `/payment_pages/{原 cs}/confirm`；oaics 创建 ConfirmationToken，商户确认一次，保存返回的原 PI secret 后查询原 PI，只有明确处于初次可确认状态才接续一次 PI confirm。两条付款分支互斥。
+5. 响应必须绑定原 Checkout/PI、报价及币种。Payment Page 的 `ppage_` 不是 Checkout ID，使用 `session_id` 核对。只有权威 paid/complete/succeeded 或原 PI 的实际成功证据才结算服务费；`amount_received` 缺失时不把报价冒充实收。
+6. 付款成功进入原旧版后处理：先刷新 Session、校验并加密保存新 AT，再查询订阅及套餐；续费处理原样保留。上游 webhook 到达可能有延迟，由原有订阅核实轮询处理；不把访问 success 页面当成功证据。
+
+## 中断和恢复
+
+- 新加 `payment_runs.legacy_checkpoint_enc`，仅加密保存原 Checkout、公钥及恢复所需原 PI secret；终态或原代理过期清理。查询接口不投影该字段。数据库迁移只新增默认空列，旧程序可兼容回滚。
+- 确认请求没有自动重试。响应丢失时最多补一次原交易 GET；未确认就进入待核实并保留资金状态。之后的核实只 GET，不能重新创建付款方式、更新税区、confirm 或 approve。
+- 官方返回验证码、3DS、额外批准或认证挑战时暂停，旧付款不打开验证浏览器。历史 `continue_approval` 入口返回 409，后台旧流程不显示服务端浏览器验证按钮。
+- 历史 oaics 单缺少原 PI 检查点时无法安全自动恢复，保留待核实；不会通过再次 confirm 获取 PI。
+
+## 抓包证据边界
+
+两次不同订单的抓包用于确认接口顺序和字段结构，不混用 Checkout、付款方式或动态令牌。成功抓包包含动态 passive captcha 字段，本实现不重放这些字段，也不生成设备指纹或解算验证；因此纯协议实现不保证每笔上游都接受。离线测试通过不等于真实扣款成功，本次改造及发布不进行真实付款或重放历史订单。

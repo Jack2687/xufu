@@ -67,7 +67,7 @@ func (a *App) adminCloseOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	statements := []string{
 		"UPDATE ledger SET description='管理员关闭订单，释放冻结服务费；不代表银行卡撤销付款',actor_id=$2 WHERE reference='payment:'||(SELECT attempt_id FROM payment_runs WHERE order_id=$1)||':release'",
-		"UPDATE payment_runs SET state='cancelled',fee_state='released',error_code='admin_closed',updated_at=now() WHERE order_id=$1",
+		"UPDATE payment_runs SET state='cancelled',fee_state='released',error_code='admin_closed',legacy_checkpoint_enc='',updated_at=now() WHERE order_id=$1",
 		"UPDATE orders SET status='cancelled',updated_at=now() WHERE id=$1",
 		"UPDATE jobs SET state='failed',error_code='admin_closed',lease_token=NULL,lease_until=NULL,updated_at=now() WHERE order_id=$1",
 		"UPDATE subscription_protocol SET lease_token=NULL,lease_until=NULL,updated_at=now() WHERE order_id=$1",

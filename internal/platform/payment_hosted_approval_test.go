@@ -75,8 +75,9 @@ func TestHostedApprovalResumeRequiresRecordedPendingAndAdministrator(t *testing.
 	if _, err := h.a.DB.Exec(ctx, `INSERT INTO payment_trace_events(order_id,phase,state,code,round,diagnostics) VALUES($1,'checking','completed','',1,'{"diagnostic_source":"submission_attempt","raw_state":"requires_approval"}')`, id); err != nil {
 		t.Fatal(err)
 	}
-	// Invalid/expired login prevents approval in the worker without clearing the fence.
-	expect(t, h.request("POST", endpoint, M{}, h.admin, nil), 202)
+	// The retired browser approval route stays disabled even with recorded
+	// approval evidence. Recovery must never advance a transaction.
+	expect(t, h.request("POST", endpoint, M{}, h.admin, nil), 409)
 	waitPayment(t, h, id, "review")
 	var fenced bool
 	if err := h.a.DB.QueryRow(ctx, "SELECT approval_started FROM payment_runs WHERE order_id=$1", id).Scan(&fenced); err != nil || fenced {

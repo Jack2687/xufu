@@ -370,7 +370,7 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 			a.paymentMu.Unlock()
 		}()
 		start := a.paymentStart
-		if browserPaymentURL(in.URL) {
+		if start != nil && browserPaymentURL(in.URL) {
 			cookies, err := a.loadBrowserSession(ctx, id)
 			if err != nil && (validCustomCheckoutURL(in.URL) || in.ResumeApproval) {
 				a.finishPayment(ctx, id, attempt, paymentEvent{State: "failed", Code: "invalid_session"})
@@ -379,7 +379,11 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 			in.SessionCookies = cookies
 		}
 		if start == nil {
-			start = startPaymentNode
+			if err := a.legacyPaymentInput(ctx, id, attempt, &in); err != nil {
+				a.finishPayment(ctx, id, attempt, paymentEvent{State: "unknown", Code: "result_unconfirmed"})
+				return
+			}
+			start = startLegacyPayment
 		}
 		proxy, expectedIP, proxyExpires, proxyErr := a.paymentOrderProxy(ctx, id, attempt, ttl)
 		if proxyErr != nil {
@@ -403,10 +407,13 @@ func (a *App) launchPayment(id, attempt string, in paymentInput, ttl int) {
 		defer closeBridge()
 		in.Proxy, in.ExpectedIP, in.ProxyExpiresAt = bridge, expectedIP, proxyExpires.UnixMilli()
 		in.SkipExitIPCheck = a.isSubscription(ctx, id)
+		in.Guard = a.legacyPaymentGuard(id, attempt, proxy.Lease)
 		proc, e := start(ctx, in)
 		in.Card = cardInput{}
 		in.Billing = nil
 		in.SessionCookies = ""
+		in.Authorization = checkoutInput{}
+		in.Checkpoint = legacyPaymentCheckpoint{}
 		fallback := func() {
 			c, stop := context.WithTimeout(context.Background(), 10*time.Second)
 			defer stop()
@@ -755,7 +762,7 @@ func (a *App) finishPayment(ctx context.Context, id, attempt string, event payme
 			}
 		}
 	}
-	_, e = tx.Exec(ctx, "UPDATE payment_runs SET state=$3,fee_state=$4,error_code=$5,submitted=$6,hosted_url_enc=CASE WHEN $3 IN ('succeeded','failed','cancelled') THEN '' ELSE hosted_url_enc END,updated_at=now() WHERE order_id=$1 AND attempt_id=$2", id, attempt, target, feeState, code, submitted)
+	_, e = tx.Exec(ctx, "UPDATE payment_runs SET state=$3,fee_state=$4,error_code=$5,submitted=$6,hosted_url_enc=CASE WHEN $3 IN ('succeeded','failed','cancelled') THEN '' ELSE hosted_url_enc END,legacy_checkpoint_enc=CASE WHEN $3 IN ('succeeded','failed','cancelled') THEN '' ELSE legacy_checkpoint_enc END,updated_at=now() WHERE order_id=$1 AND attempt_id=$2", id, attempt, target, feeState, code, submitted)
 	if e == nil {
 		_, e = tx.Exec(ctx, "UPDATE orders SET status=$2,updated_at=now() WHERE id=$1", id, orderState)
 	}
@@ -834,13 +841,15 @@ func (a *App) checkPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	resume := strings.HasPrefix(r.URL.Path, "/api/admin/") && r.URL.Query().Get("continue_approval") == "true"
 	var savedQuote M
+	if e = tx.QueryRow(ctx, "SELECT jsonb_build_object('amount',amount,'currency',currency) FROM payment_runs WHERE order_id=$1", id).Scan(&savedQuote); e != nil {
+		paymentError(w, e)
+		return
+	}
+	// Legacy recovery is always read-only, including the historical approval
+	// query flag. Browser approval is no longer part of this executor.
 	if resume {
-		var ready bool
-		e = tx.QueryRow(ctx, `SELECT p.submitted AND NOT p.approval_started AND EXISTS(SELECT 1 FROM payment_trace_events t WHERE t.order_id=p.order_id AND t.diagnostics->>'diagnostic_source'='submission_attempt' AND (t.diagnostics->>'raw_state'='requires_approval' OR t.diagnostics->>'raw_status'='requires_approval')),jsonb_build_object('amount',p.amount,'currency',p.currency) FROM payment_runs p WHERE p.order_id=$1`, id).Scan(&ready, &savedQuote)
-		if e != nil || !ready || !hostedPaymentURL(raw) {
-			fail(w, 409, "原交易当前无法接续批准")
-			return
-		}
+		fail(w, 409, "旧付款仅支持核实原交易；请在官方页面完成额外验证后核实")
+		return
 	}
 	ttl := num(cfg, "prepare_timeout_seconds", 120) + 30
 	_, e = tx.Exec(ctx, "UPDATE payment_runs SET state='checking',expires_at=now()+($2*interval '1 second'),updated_at=now() WHERE order_id=$1", id, ttl)
